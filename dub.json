@@ -1,0 +1,29 @@
+{
+	"description": "myouou emulator",
+	"dependencies": {
+		"bindbc-sdl": "~>2.4.4"
+	},
+	"authors": [
+		"okzyrox"
+	],
+	"copyright": "Copyright © 2026, okzyrox",
+	"license": "special",
+	"name": "myouou",
+	"sourcePaths": [
+		"Source"
+	],
+	"importPaths": [
+		"."
+	],
+	"excludedSourceFiles": [
+		"Source/Native/*"
+	],
+	"versions": [
+		"SDL_4_20"
+	],
+	"libs": [
+		"Bin/SDL3",
+		"Bin/DynarmicNativeWrapper"
+	],
+	"targetPath": "Bin"
+}
