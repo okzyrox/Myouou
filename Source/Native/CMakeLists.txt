@@ -1,0 +1,45 @@
+cmake_minimum_required(VERSION 3.12)
+project(MyououDynarmicNativeWrapper LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+set(MYOUOU_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." CACHE PATH "Myouou project root")
+set(MYOUOU_BOOST_ROOT "${MYOUOU_ROOT}/Externals/boost" CACHE PATH "Boost source tree")
+
+if(NOT EXISTS "${MYOUOU_BOOST_ROOT}/boost/version.hpp")
+    message(FATAL_ERROR "Boost not found at ${MYOUOU_BOOST_ROOT}!!")
+endif()
+
+# trash
+file(STRINGS "${MYOUOU_BOOST_ROOT}/boost/version.hpp" MYOUOU_BOOST_VERSION_LINE REGEX "^#define BOOST_VERSION [0-9]+")
+string(REGEX REPLACE "^#define BOOST_VERSION ([0-9]+).*" "\\1" MYOUOU_BOOST_VERSION_NUMBER "${MYOUOU_BOOST_VERSION_LINE}")
+math(EXPR MYOUOU_BOOST_MAJOR "${MYOUOU_BOOST_VERSION_NUMBER} / 100000")
+math(EXPR MYOUOU_BOOST_MINOR "${MYOUOU_BOOST_VERSION_NUMBER} / 100 % 1000")
+math(EXPR MYOUOU_BOOST_PATCH "${MYOUOU_BOOST_VERSION_NUMBER} % 100")
+set(MYOUOU_BOOST_VERSION "${MYOUOU_BOOST_MAJOR}.${MYOUOU_BOOST_MINOR}.${MYOUOU_BOOST_PATCH}")
+
+# findboost
+set(CMAKE_POLICY_DEFAULT_CMP0167 NEW)
+set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ON)
+set(Boost_DIR "${CMAKE_CURRENT_SOURCE_DIR}/CMake" CACHE PATH "" FORCE)
+set(Boost_NO_SYSTEM_PATHS ON)
+
+# Dynarmic conf
+set(DYNARMIC_FRONTENDS "A64" CACHE STRING "" FORCE)
+set(DYNARMIC_TESTS OFF CACHE BOOL "" FORCE)
+set(DYNARMIC_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+set(DYNARMIC_USE_BUNDLED_EXTERNALS ON CACHE BOOL "" FORCE)
+
+add_subdirectory("${MYOUOU_ROOT}/Externals/dynarmic" "${CMAKE_BINARY_DIR}/Dynarmic" EXCLUDE_FROM_ALL)
+
+add_library(DynarmicNativeWrapper SHARED DynarmicNativeWrapper.cpp DynarmicNativeWrapper.h)
+target_link_libraries(DynarmicNativeWrapper PRIVATE dynarmic)
+
+foreach(Configuration IN ITEMS "" _DEBUG _RELEASE _RELWITHDEBINFO _MINSIZEREL)
+    set_target_properties(DynarmicNativeWrapper PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY${Configuration} "${MYOUOU_ROOT}/Bin"
+        LIBRARY_OUTPUT_DIRECTORY${Configuration} "${MYOUOU_ROOT}/Bin"
+        ARCHIVE_OUTPUT_DIRECTORY${Configuration} "${MYOUOU_ROOT}/Bin")
+endforeach()
