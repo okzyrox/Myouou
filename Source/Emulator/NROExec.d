@@ -16,6 +16,7 @@ import std.stdio;
 // Core
 import Source.Emulator.GuestEnv;
 import Source.Format.NRO;
+import Source.Kernel.Kernel;
 import Source.Kernel.Svc;
 import Source.Loader.NROLoader;
 import Source.Memory.Guest;
@@ -48,7 +49,7 @@ void DebugRegs(DynarmicJit jit) {
 }
 
 // Main
-size_t svcLimit = 200;
+size_t svcLimit = 20_000;
 int RunFile(string path) {
     NROFile nro = NROFile.Load(path);
     DebugNROFile(nro);
@@ -58,6 +59,7 @@ int RunFile(string path) {
     GuestEnvironment environment = new GuestEnvironment(memory);
 
     DynarmicJit jit = environment.CreateJit();
+    HorizonKernel kernel = new HorizonKernel(environment, cast(uint) loaded.MainThreadHandle);
     LoadEntry(environment, jit, loaded);
 
     writefln("Loaded 0x%X, 0x%X. top 0x%X", loaded.ImgBase, loaded.EntryPoint, loaded.StackTop);
@@ -71,7 +73,7 @@ int RunFile(string path) {
 
         jit.ClearHalt(SvcHalt);
         svcCount++;
-        bool wasStubbed = StubSvcId(jit, environment.PreviousSvc);
+        bool wasStubbed = kernel.HandleSvc(environment.PreviousSvc);
         if (!wasStubbed) {
             writefln("Stopped at %s (0x%X).", GetSvcName(environment.PreviousSvc), jit.Pc - 4);
             DebugRegs(jit);

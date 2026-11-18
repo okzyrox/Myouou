@@ -57,14 +57,15 @@ struct NROData {
     ulong HeapBase;
     size_t HeapSize;
     ulong ReturnAddress;
+    ulong MainThreadHandle;
 }
 
 // Utils
-private void MapMemorySegment(GuestMemory memory, NROFile nro, NROSegmentKind kind, ulong base, MemoryPermission permission, string id) {
+private void MapMemorySegment(GuestMemory memory, NROFile nro, NROSegmentKind kind, ulong base, MemoryPermission permission, string id, MemoryType state) {
     const NROSegment segment = nro.Header.Segments[kind];
     if (segment.Size == 0)
         return;
-    memory.Map(base + segment.FileOffset, segment.Size, permission, id);
+    memory.Map(base + segment.FileOffset, segment.Size, permission, id, state);
     memory.WriteBytes(base + segment.FileOffset, nro.Segment(kind));
 }
 
@@ -87,15 +88,15 @@ NROData LoadNROToMemory(GuestMemory memory, NROFile nro, Layout layout = Layout.
     const NROHeader header = nro.Header;
     const ulong base = layout.ImgBase;
 
-    MapMemorySegment(memory, nro, NROSegmentKind.Text, base, MemoryPermission.ReadExecute, ".text");
-    MapMemorySegment(memory, nro, NROSegmentKind.Ro, base, MemoryPermission.Read, ".rodata");
+    MapMemorySegment(memory, nro, NROSegmentKind.Text, base, MemoryPermission.ReadExecute, ".text", MemoryType.Code);
+    MapMemorySegment(memory, nro, NROSegmentKind.Ro, base, MemoryPermission.Read, ".rodata", MemoryType.Code);
 
     const NROSegment data = header.Segments[NROSegmentKind.Data];
-    memory.Map(base + data.FileOffset, data.Size + nro.BssSize, MemoryPermission.ReadWrite, ".data");
+    memory.Map(base + data.FileOffset, data.Size + nro.BssSize, MemoryPermission.ReadWrite, ".data", MemoryType.CodeData);
     memory.WriteBytes(base + data.FileOffset, nro.Data);
 
-    memory.Map(layout.StackBase, layout.StackSize, MemoryPermission.ReadWrite, "Stack");
-    memory.Map(layout.TlsBase, GuestPageSize, MemoryPermission.ReadWrite, "Tls");
+    memory.Map(layout.StackBase, layout.StackSize, MemoryPermission.ReadWrite, "Stack", MemoryType.Stack);
+    memory.Map(layout.TlsBase, GuestPageSize, MemoryPermission.ReadWrite, "Tls", MemoryType.ThreadLocal);
     memory.Map(layout.HeapBase, layout.HeapSize, MemoryPermission.ReadWrite, "Heap");
     memory.Map(layout.ContextBase, GuestPageSize, MemoryPermission.ReadWrite, "LoaderContext");
 
@@ -109,6 +110,7 @@ NROData LoadNROToMemory(GuestMemory memory, NROFile nro, Layout layout = Layout.
     nroData.HeapBase = layout.HeapBase;
     nroData.HeapSize = layout.HeapSize;
     nroData.ReturnAddress = layout.ReturnAddress;
+    nroData.MainThreadHandle = layout.MainThreadHandle;
 
     WriteContents(memory, layout);
     return nroData;

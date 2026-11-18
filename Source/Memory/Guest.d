@@ -32,6 +32,39 @@ enum MemoryAccess {
     Execute,
 }
 
+enum MemoryType : uint {
+    Free = 0x00,
+    Io = 0x01,
+    Static = 0x02,
+    Code = 0x03,
+    CodeData = 0x04,
+    Normal = 0x05,
+    Shared = 0x06,
+    Alias = 0x07,
+    AliasCode = 0x08,
+    AliasCodeData = 0x09,
+    Ipc = 0x0A,
+    Stack = 0x0B,
+    ThreadLocal = 0x0C,
+    Transfered = 0x0D,
+    SharedTransfered = 0x0E,
+    SharedCode = 0x0F,
+    Inaccessible = 0x10,
+    NonSecureIpc = 0x11,
+    NonDeviceIpc = 0x12,
+    Kernel = 0x13,
+    GeneratedCode = 0x14,
+    CodeOut = 0x15
+}
+
+struct MemoryQuery {
+    ulong Base;
+    ulong Size;
+    MemoryType MemType;
+    uint Attribute;
+    MemoryPermission Permission;
+}
+
 class GuestMemoryError : Exception {
     this(string message, string file = __FILE__, size_t line = __LINE__) pure nothrow @safe {
         super(message, file, line);
@@ -54,15 +87,22 @@ class GuestMemoryFault : GuestMemoryError {
 // Classes
 final class MemoryRegion {
     MemoryPermission Permission;
+    MemoryType MemType;
+    uint Attribute;
     ulong Base;
     string Name;
     ubyte[] Bytes;
 
-    this(ulong base, size_t size, MemoryPermission permission, string name) {
+    this(ulong base, size_t size, MemoryPermission permission, string name, MemoryType memType = MemoryType.Normal) {
+        this(base, new ubyte[size], permission, name, memType);
+    }
+
+    this(ulong base, ubyte[] bytes, MemoryPermission permission, string name, MemoryType memType = MemoryType.Normal) {
         Base = base;
-        Bytes = new ubyte[size];
+        Bytes = bytes;
         Permission = permission;
         Name = name;
+        MemType = memType;
     }
 
     ulong End() const nothrow @nogc @safe {
@@ -78,16 +118,139 @@ final class GuestMemory {
     private MemoryRegion[] regions;
     private MemoryRegion previousRegion;
 
-    MemoryRegion Map(ulong base, size_t size, MemoryPermission permission, string name) {
+    MemoryRegion Map(ulong base, size_t size, MemoryPermission permission, string name, MemoryType memType = MemoryType.Normal) {
+        CheckMappable(base, size, name);
+        return Insert(new MemoryRegion(base, size, permission, name, memType));
+    }
+
+    MemoryRegion MapBacked(ulong base, ubyte[] bytes, MemoryPermission permission, string name, MemoryType memType) {
+        CheckMappable(base, bytes.length, name);
+        return Insert(new MemoryRegion(base, bytes, permission, name, memType));
+    }
+
+    bool IsFree(ulong base, size_t size) const nothrow @nogc {
+        foreach (region; regions)
+            if (region.Base < base + size && base < region.End())
+                return false;
+        return true;
+    }
+
+    bool IsMapped(ulong base, size_t size) nothrow @nogc {
+        ulong address = base;
+        while (address < base + size) {
+            MemoryRegion region = Find(address);
+            if (region is null)
+                return false;
+            address = region.End();
+        }
+        return true;
+    }
+
+    MemoryRegion[] Isolate(ulong base, size_t size) {
+        if (size == 0 || !IsMapped(base, size))
+            return null;
+
+        SplitAt(base);
+        SplitAt(base + size);
+
+        MemoryRegion[] found;
+        foreach (region; regions)
+            if (region.Base >= base && region.End() <= base + size)
+                found ~= region;
+        return found;
+    }
+
+    bool Unmap(ulong base, size_t size) {
+        MemoryRegion[] found = Isolate(base, size);
+        if (found is null)
+            return false;
+
+        MemoryRegion[] kept;
+        foreach (region; regions)
+            if (region.Base < base || region.End() > base + size)
+                kept ~= region;
+        regions = kept;
+        previousRegion = null;
+        return true;
+    }
+
+    bool Protect(ulong base, size_t size, MemoryPermission permission) {
+        MemoryRegion[] found = Isolate(base, size);
+        if (found is null)
+            return false;
+        foreach (region; found)
+            region.Permission = permission;
+        return true;
+    }
+
+    bool SetAttribute(ulong base, size_t size, uint mask, uint value) {
+        MemoryRegion[] found = Isolate(base, size);
+        if (found is null)
+            return false;
+        foreach (region; found)
+            region.Attribute = (region.Attribute & ~mask) | (value & mask);
+        return true;
+    }
+
+    MemoryQuery Query(ulong address, ulong addressSpaceEnd) const nothrow @nogc {
+        if (address >= addressSpaceEnd)
+            return MemoryQuery(addressSpaceEnd, 0 - addressSpaceEnd, MemoryType.Inaccessible, 0, MemoryPermission.None);
+
+        size_t memI = 0;
+        while (memI < regions.length && regions[memI].End() <= address)
+            memI++;
+
+        if (memI == regions.length || regions[memI].Base > address) {
+            const ulong start = memI == 0 ? 0 : regions[memI - 1].End();
+            const ulong end = memI == regions.length ? addressSpaceEnd : regions[memI].Base;
+            return MemoryQuery(start, end - start, MemoryType.Free, 0, MemoryPermission.None);
+        }
+
+        const MemoryRegion region = regions[memI];
+        size_t first = memI;
+        while (first > 0 && Coalesces(regions[first - 1], regions[first]))
+            first--;
+        size_t last = memI;
+        while (last + 1 < regions.length && Coalesces(regions[last], regions[last + 1]))
+            last++;
+
+        const ulong start = regions[first].Base;
+        return MemoryQuery(start, regions[last].End() - start, region.MemType, region.Attribute, region.Permission);
+    }
+
+    private static bool Coalesces(const MemoryRegion left, const MemoryRegion right) nothrow @nogc {
+        return left.End() == right.Base && left.MemType == right.MemType && left.Permission == right.Permission && left.Attribute == right.Attribute;
+    }
+
+    private void CheckMappable(ulong base, size_t size, string name) {
         if (base % GuestPageSize != 0 || size == 0 || size % GuestPageSize != 0)
             throw new GuestMemoryError(format("Page of Region %s at 0x%X (0x%X bytes) is not aligned!", name, base, size));
+        if (!IsFree(base, size))
+            throw new GuestMemoryError(format("Region %s at 0x%X (0x%X bytes) is overlapping existing map!", name, base, size));
+    }
 
-        MemoryRegion reg = new MemoryRegion(base, size, permission, name);
+    private MemoryRegion Insert(MemoryRegion reg) {
         size_t regI = 0;
-        while (regI < regions.length && regions[regI].Base < base)
+        while (regI < regions.length && regions[regI].Base < reg.Base)
             regI++;
         regions = regions[0 .. regI] ~ reg ~ regions[regI .. $];
+        previousRegion = null;
         return reg;
+    }
+
+    private void SplitAt(ulong address) {
+        foreach (i, region; regions) {
+            if (region.Base >= address || address >= region.End())
+                continue;
+
+            const size_t offset = cast(size_t) (address - region.Base);
+            MemoryRegion upper = new MemoryRegion(address, region.Bytes[offset .. $], region.Permission, region.Name, region.MemType);
+            upper.Attribute = region.Attribute;
+            region.Bytes = region.Bytes[0 .. offset];
+            regions = regions[0 .. i + 1] ~ upper ~ regions[i + 1 .. $];
+            previousRegion = null;
+            return;
+        }
     }
 
     const(MemoryRegion)[] Regions() const nothrow @nogc {

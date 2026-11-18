@@ -15,11 +15,15 @@ import std.stdio;
 import bindbc.sdl;
 
 // Core
+import Source.Util.Logger;
 import Source.Wrapper.Dynarmic;
 import Source.Wrapper.DynarmicJit;
 import Source.Emulator.NROExec;
 
 int main(string[] args) {
+    LogLevel logLevel = LogLevel.Trace;
+    LogFilter.MinimumLevel(logLevel);
+
     if (args.length > 1) {
         return RunFile(args[1]);
     } else {

@@ -15,6 +15,8 @@ import std.format : format;
 import std.stdio;
 
 // Core
+import Source.Util.Logger;
+import Source.Kernel.Result;
 import Source.Wrapper.DynarmicJit;
 
 // Types
@@ -145,8 +147,6 @@ enum Svc : uint {
     CallSecureMonitor = 0x7F,
 }
 
-enum uint ResultSuccess = 0;
-
 // Utils
 string GetSvcName(uint id) pure @safe {
     switch (id) {
@@ -162,7 +162,7 @@ string GetSvcName(uint id) pure @safe {
 bool StubSvcId(DynarmicJit jit, uint id) {
     const ulong[31] registers = jit.Registers;
     string name = GetSvcName(id);
-    writefln("stub [SVC] 0x%02X %-28s X0=0x%X X1=0x%X X2=0x%X X3=0x%X", id, name, registers[0], registers[1], registers[2], registers[3]);
+    GetLogger("SVC").Stub("0x%02X %-28s X0=0x%X X1=0x%X X2=0x%X X3=0x%X", id, name, registers[0], registers[1], registers[2], registers[3]);
 
     if (id == Svc.ExitProcess || id == Svc.Break) // hacky
         return false;
