@@ -88,6 +88,22 @@ final class KSharedMemory : KObject {
         Bytes = new ubyte[size];
     }
 
+    ulong GetU64(size_t offset) {
+        return *cast(ulong*) (Bytes.ptr + offset);
+    }
+
+    void SetU64(size_t offset, ulong value) {
+        *cast(ulong*) (Bytes.ptr + offset) = value;
+    }
+
+    uint GetU32(size_t offset) {
+        return *cast(uint*) (Bytes.ptr + offset);
+    }
+
+    void SetU32(size_t offset, uint value) {
+        *cast(uint*) (Bytes.ptr + offset) = value;
+    }
+
     override string Describe() const {
         return format("KSharedMemory(%s, 0x%X)", Name, Bytes.length);
     }

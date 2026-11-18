@@ -150,6 +150,7 @@ final class HorizonKernel {
         Applet = new AppletState();
         Hid = new HidState();
         Display = new HostDisplay();
+        Display.OnInputCallback = &Hid.WriteNpadInput;
         Nv = new NvState();
         Vi = new ViState(Memory, Nv, Display);
         Services = new ServiceRegistry();

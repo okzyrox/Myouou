@@ -18,6 +18,7 @@ import bindbc.sdl;
 import bindbc.loader : LoadMsg;
 
 // Core
+import Source.Frontend.Input;
 import Source.Util.Logger;
 
 // Types
@@ -41,6 +42,8 @@ uint BytesPerPixel(GuestPixelFormat format) pure nothrow @nogc @safe {
 final class HostDisplay {
     string Title = "Myouou";
     bool ShouldQuit;
+    InputConfig Input;
+    void delegate(NpadInput) OnInputCallback;
 
     private SDL_Window* window;
     private SDL_Renderer* renderer;
@@ -54,6 +57,8 @@ final class HostDisplay {
 
     this() {
         log = GetLogger("Display");
+        Input = new InputConfig();
+        Input.Load();
     }
 
     bool IsOpen() const {
@@ -133,13 +138,20 @@ final class HostDisplay {
     }
 
     void UpdateEvents() {
-        if (window is null)
+        if (window is null) {
             return;
+        }
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
                 ShouldQuit = true;
             }
+            else if (event.type == SDL_EVENT_KEY_DOWN) {
+                Input.HandleScancode(event.key.scancode);
+            }
+        }
+        if (OnInputCallback !is null) {
+            OnInputCallback(Input.Poll());
         }
     }
 

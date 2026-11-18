@@ -36,8 +36,11 @@ int main(int argc, char* argv[])
         // newly pressed in this frame compared to the previous one
         u64 kDown = padGetButtonsDown(&pad);
 
-        if (kDown & HidNpadButton_Plus)
+        if (kDown & HidNpadButton_Plus) {
             break; // break in order to return to hbmenu
+        } else if (kDown & HidNpadButton_A) {
+            printf("A!\n");
+        }
 
         // Your code goes here
 

@@ -1,0 +1,24 @@
+# Default options!
+# Keybind Maps are listed below. Format: <Key>,<Button>
+Return,Plus
+Backspace,Minus
+X,A
+Z,B
+S,X
+A,Y
+Q,L
+E,R
+1,ZL
+3,ZR
+Up,Up
+Down,Down
+Left,Left
+Right,Right
+I,StickLUp
+J,StickLLeft
+K,StickLDown
+L,StickLRight
+Keypad 8,StickRUp
+Keypad 4,StickRLeft
+Keypad 5,StickRDown
+Keypad 6,StickRRight
