@@ -21,7 +21,7 @@ import Source.Wrapper.DynarmicJit;
 import Source.Emulator.NROExec;
 
 int main(string[] args) {
-    LogLevel logLevel = LogLevel.Trace;
+    LogLevel logLevel = LogLevel.Info;
     LogFilter.MinimumLevel(logLevel);
 
     if (args.length > 1) {
