@@ -10,8 +10,10 @@
 
 module Source.Wrapper.DynarmicJit;
 
+// Core
 import Source.Wrapper.Dynarmic;
 
+// Types
 alias DynarmicConfig = MyououDynarmicConfig;
 alias Vector128 = ulong[2];
 
@@ -29,6 +31,7 @@ class DynarmicError : Exception {
     }
 }
 
+// Classes
 abstract class DynarmicCallbacks {
     bool MemoryReadCode(ulong vaddr, out uint value) {
         value = MemoryRead32(vaddr);

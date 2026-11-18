@@ -1,6 +1,7 @@
 # Misc
 .dub
 dbg/*
+Test/*
 
 # D Output
 *.pdb

@@ -10,6 +10,7 @@
 
 module Source.Wrapper.Dynarmic;
 
+// Types
 enum HaltReason : uint {
     None = 0x00000000,
     Step = 0x00000001,
@@ -23,10 +24,6 @@ enum HaltReason : uint {
     UserDefined6 = 0x20000000,
     UserDefined7 = 0x40000000,
     UserDefined8 = 0x80000000,
-}
-
-bool Has(HaltReason reasons, HaltReason reason) pure nothrow @nogc @safe {
-    return (reasons & reason) != 0;
 }
 
 enum DynarmicException : uint {
@@ -75,6 +72,13 @@ enum OptimizationFlag : uint {
     UnsafeIgnoreStandardFpcrValue = 0x00080000,
     UnsafeIgnoreGlobalMonitor = 0x00100000,
 }
+
+// Utils
+bool Has(HaltReason reasons, HaltReason reason) pure nothrow @nogc @safe {
+    return (reasons & reason) != 0;
+}
+
+// Externs
 
 struct MyououDynarmicJit;
 struct MyououDynarmicMonitor;
