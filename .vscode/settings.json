@@ -5,6 +5,7 @@
     "C_Cpp.default.includePath": [
         "${env:DEVKITPRO_PATH}/devkitA64/aarch64-none-elf/include/**",
         "${env:DEVKITPRO_PATH}/libnx/include/**",
+        "${env:DEVKITPRO_PATH}/portlibs/switch/include/**",
         "${workspaceFolder}/**"
     ]
 }
