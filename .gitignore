@@ -1,7 +1,6 @@
 # Misc
 .dub
 dbg/*
-Test/*
 
 # D Output
 *.pdb
@@ -19,3 +18,8 @@ Bin/
 *.lib
 Externals/boost/*
 !Externals/boost/boost.md
+
+# Executables & Data
+*.elf
+*.nro
+*.nacp
