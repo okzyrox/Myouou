@@ -277,6 +277,9 @@ final class BufferQueue {
             return;
         }
 
+        if (display.PresentGuestSurface(map.Address + info.Offset))
+            return;
+
         const uint width = info.PlaneWidth != 0 ? info.PlaneWidth : info.Width;
         const uint height = info.PlaneHeight != 0 ? info.PlaneHeight : info.Height;
         const size_t rowBytes = cast(size_t) width * BytesPerPixel(info.Format);
@@ -294,7 +297,7 @@ final class BufferQueue {
 
             // deswizzle GOBs for the display
             // using sdl3 but might change out for native ogl/vk later
-            DeswizzleBlockLinear(surface, frame, rowBytes, height, pitch, info.BlockHeightLog2);
+            BlockLinearDeswizzle(surface, frame, rowBytes, height, pitch, info.BlockHeightLog2);
             display.Present(frame, width, height, cast(int) rowBytes, info.Format);
         } else {
             display.Present(surface, width, height, cast(int) pitch, info.Format);

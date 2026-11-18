@@ -30,7 +30,7 @@ size_t BlockLinearSize(size_t pitch, size_t height, uint blockHeightLog2) pure n
     return rowsOfBlocks * widthInGobs * (GobSize << blockHeightLog2);
 }
 
-void DeswizzleBlockLinear(const(ubyte)[] source, ubyte[] destination, size_t rowBytes, size_t blockHeight, size_t pitch, uint blockHeightLog2) {
+void BlockLinearDeswizzle(const(ubyte)[] source, ubyte[] destination, size_t rowBytes, size_t blockHeight, size_t pitch, uint blockHeightLog2) {
     const size_t blockGobs = cast(size_t) 1 << blockHeightLog2;
     const size_t blockRows = GobHeight * blockGobs;
     const size_t widthInGobs = (pitch + GobWidth - 1) / GobWidth;
@@ -52,4 +52,16 @@ void DeswizzleBlockLinear(const(ubyte)[] source, ubyte[] destination, size_t row
             line[x .. x + length] = source[offset .. offset + length];
         }
     }
+}
+
+size_t BlockLinearOffset(size_t x, size_t y, size_t pitch, uint blockHeightLog2) pure nothrow @nogc @safe {
+    const size_t blockGobs = cast(size_t) 1 << blockHeightLog2;
+    const size_t blockRows = GobHeight * blockGobs;
+    const size_t widthInGobs = (pitch + GobWidth - 1) / GobWidth;
+    const size_t blockSize = GobSize * blockGobs;
+    
+    return (y / blockRows) * widthInGobs * blockSize
+        + (x / GobWidth) * blockSize
+        + ((y % blockRows) / GobHeight) * GobSize
+        + GobOffset(x, y);
 }
