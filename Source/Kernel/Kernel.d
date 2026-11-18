@@ -32,9 +32,14 @@ import Source.Wrapper.DynarmicJit;
 import Source.Service.Am;
 import Source.Service.Apm;
 import Source.Service.Hid;
+import Source.Service.Nvdrv;
 import Source.Service.Service;
 import Source.Service.Set;
 import Source.Service.Sm;
+import Source.Service.Vi;
+
+// Frontend
+import Source.Frontend.HostDisplay;
 
 // Types
 enum InfoType : uint {
@@ -115,8 +120,12 @@ final class HorizonKernel {
     HandleTable Handles;
     ServiceRegistry Services;
     AddressSpace Space;
+    // TODO: make states service dependents on register
     AppletState Applet;
-    HidState Hid; // TODO: make states service dependents on register
+    HidState Hid;
+    NvState Nv;
+    ViState Vi;
+    HostDisplay Display;
 
     ulong ProgramId = 0x0100_0000_0000_100D;
     Logger SvcLog;
@@ -140,6 +149,9 @@ final class HorizonKernel {
 
         Applet = new AppletState();
         Hid = new HidState();
+        Display = new HostDisplay();
+        Nv = new NvState();
+        Vi = new ViState(Memory, Nv, Display);
         Services = new ServiceRegistry();
         RegisterServices();
     }
@@ -150,10 +162,24 @@ final class HorizonKernel {
         foreach (name; ["apm", "apm:am", "apm:p"])
             Services.Register(name, ApmFactory(name));
         Services.Register("hid", () => cast(IPCService) new HidService(Hid));
+        foreach (name; ["nvdrv", "nvdrv:a", "nvdrv:s", "nvdrv:t"])
+            Services.Register(name, NvdrvFactory(name));
+        Services.Register("vi:u", ViFactory("vi:u", 0));
+        Services.Register("vi:s", ViFactory("vi:s", 1));
+        Services.Register("vi:m", ViFactory("vi:m", 2));
     }
 
+    // todo: refactor factories to each service individually?
     private static ServiceFactory ApmFactory(string name) {
         return () => cast(IPCService) new ApmService(name);
+    }
+
+    private ServiceFactory NvdrvFactory(string name) {
+        return () => cast(IPCService) new NvdrvService(name, Nv);
+    }
+
+    private ServiceFactory ViFactory(string name, uint commandId) {
+        return () => cast(IPCService) new ViRootService(name, commandId, Vi);
     }
 
     bool HandleSvc(uint id) {
