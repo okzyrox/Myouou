@@ -42,7 +42,7 @@ struct Layout {
     ulong ContextBase = 0x1E00_0000;
     ulong TlsBase = 0x1F00_0000;
     ulong HeapBase = 0x2000_0000;
-    size_t HeapSize = 0x200_0000;
+    size_t HeapSize = 0x1000_0000;
     ulong MainThreadHandle = 0xF001;
     string Argv = "";
 }
