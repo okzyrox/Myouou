@@ -27,6 +27,7 @@ import Source.Util.Logger;
 
 // Types
 enum size_t MaxTextureBytes = 64 * 1024 * 1024;
+enum uint TrackedPageShift = 12;
 
 struct HostTextureFormat {
     SDL_GPUTextureFormat Format = SDL_GPU_TEXTUREFORMAT_INVALID;
@@ -44,6 +45,10 @@ struct CachedTexture {
     uint Width;
     uint Height;
     HostTextureFormat Format;
+    TextureHeader Header;
+    ulong CpuAddress;
+    size_t GuestSize;
+    bool Dirty;
 }
 
 HostTextureFormat ToHostFormat(const ref TextureHeader header) {
@@ -137,12 +142,14 @@ final class TextureCache {
     private CachedTexture[string] textures;
     private SDL_GPUSampler*[string] samplers;
     private bool[string] failures;
+    private bool[ulong] trackedPages;
     private Logger log;
 
     this(HostDisplay display, GpuMemoryManager memory) {
         this.display = display;
         this.memory = memory;
         log = GetLogger("Gpu::TextureCache");
+        memory.OnWrite = &GuestWritten;
     }
 
     private SDL_GPUDevice* Device() {
@@ -160,6 +167,9 @@ final class TextureCache {
     CachedTexture* Texture(const ref TextureHeader header) {
         const string key = format("%s", header.Words);
         if (CachedTexture* found = key in textures) {
+            if (found.Dirty) {
+                Reupload(*found);
+            }
             return found;
         }
 
@@ -175,9 +185,9 @@ final class TextureCache {
 
         const uint width = header.Width;
         const uint height = header.Height;
-        const size_t blocksWide = (width + hostFormat.BlockWidth - 1) / hostFormat.BlockWidth;
-        const size_t blocksHigh = (height + hostFormat.BlockHeight - 1) / hostFormat.BlockHeight;
-        const size_t rowBytes = blocksWide * hostFormat.BytesPerBlock;
+        size_t rowBytes;
+        size_t blocksHigh;
+        Layout(header, hostFormat, rowBytes, blocksHigh);
         ubyte[] pixels = new ubyte[rowBytes * blocksHigh];
         if (!ReadPixels(header, rowBytes, blocksHigh, pixels)) {
             return null;
@@ -197,14 +207,75 @@ final class TextureCache {
         display.UploadTexture(texture, pixels, width, height, width);
 
         log.Info("Uploaded texture %dx%d %s at gpu 0x%X (%d bytes)%s.", width, height, hostFormat.Format, header.Address, pixels.length, CornerTexels(pixels, rowBytes, blocksHigh, hostFormat));
-        textures[key] = CachedTexture(texture, width, height, hostFormat);
+        CachedTexture cached = CachedTexture(texture, width, height, hostFormat, header);
+        Track(cached, rowBytes, blocksHigh);
+        textures[key] = cached;
         return key in textures;
+    }
+
+    private static void Layout(const ref TextureHeader header, const ref HostTextureFormat hostFormat, out size_t rowBytes, out size_t rows) {
+        const size_t blocksWide = (header.Width + hostFormat.BlockWidth - 1) / hostFormat.BlockWidth;
+        rows = (header.Height + hostFormat.BlockHeight - 1) / hostFormat.BlockHeight;
+        rowBytes = blocksWide * hostFormat.BytesPerBlock;
+    }
+
+    private static size_t GuestSize(const ref TextureHeader header, size_t rowBytes, size_t rows) {
+        if (header.BlockLinear) {
+            const size_t pitch = (rowBytes + GobWidth - 1) & ~(GobWidth - 1);
+            return BlockLinearSize(pitch, rows, header.BlockHeightLog2);
+        }
+        return header.Pitch * rows;
+    }
+
+    private void Track(ref CachedTexture cached, size_t rowBytes, size_t rows) {
+        cached.GuestSize = GuestSize(cached.Header, rowBytes, rows);
+        // Texture memory is tracked in CPU address space so GPU mapping writes still get seen
+        if (!memory.Translate(cached.Header.Address, cached.CpuAddress) || cached.GuestSize == 0) {
+            return;
+        }
+        foreach (page; cached.CpuAddress >> TrackedPageShift .. ((cached.CpuAddress + cached.GuestSize - 1) >> TrackedPageShift) + 1) {
+            trackedPages[page] = true;
+        }
+    }
+
+    private void GuestWritten(ulong cpuAddress, size_t size) {
+        if (size == 0) {
+            return;
+        }
+        bool tracked = false;
+        foreach (page; cpuAddress >> TrackedPageShift .. ((cpuAddress + size - 1) >> TrackedPageShift) + 1) {
+            if (page in trackedPages) {
+                tracked = true;
+                break;
+            }
+        }
+        if (!tracked) {
+            return;
+        }
+        foreach (ref cached; textures) {
+            if (cached.CpuAddress < cpuAddress + size && cpuAddress < cached.CpuAddress + cached.GuestSize) {
+                cached.Dirty = true;
+            }
+        }
+    }
+
+    private void Reupload(ref CachedTexture cached) {
+        cached.Dirty = false;
+        size_t rowBytes;
+        size_t rows;
+        Layout(cached.Header, cached.Format, rowBytes, rows);
+        ubyte[] pixels = new ubyte[rowBytes * rows];
+        if (!ReadPixels(cached.Header, rowBytes, rows, pixels)) {
+            return;
+        }
+        display.UploadTexture(cached.Texture, pixels, cached.Width, cached.Height, cached.Width);
+        log.Trace("Reuploaded texture %dx%d at gpu addr 0x%X.", cached.Width, cached.Height, cached.Header.Address);
     }
 
     private bool ReadPixels(const ref TextureHeader header, size_t rowBytes, size_t rows, ubyte[] pixels) {
         if (header.BlockLinear) {
             const size_t pitch = (rowBytes + GobWidth - 1) & ~(GobWidth - 1);
-            const size_t size = BlockLinearSize(pitch, rows, header.BlockHeightLog2);
+            const size_t size = GuestSize(header, rowBytes, rows);
             if (size > MaxTextureBytes) {
                 FailOnce(format("size%X", header.Address), "Texture at gpu 0x%X is too large (%d bytes)!", header.Address, size);
                 return false;

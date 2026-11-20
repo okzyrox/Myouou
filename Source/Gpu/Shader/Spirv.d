@@ -52,6 +52,8 @@ enum SpvOp : ushort {
     CompositeExtract = 81,
     ImageSampleImplicitLod = 87,
     ImageSampleExplicitLod = 88,
+    ImageFetch = 95,
+    Image = 100,
     ConvertFToU = 109,
     ConvertFToS = 110,
     ConvertSToF = 111,

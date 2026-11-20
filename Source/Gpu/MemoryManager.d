@@ -37,6 +37,7 @@ struct GpuReservation {
 // Class
 final class GpuMemoryManager {
     GuestMemory Memory;
+    void delegate(ulong cpuAddress, size_t size) OnWrite;
 
     private GpuMapping[] mappings;
     private GpuReservation[] reservations;
@@ -155,6 +156,9 @@ final class GpuMemoryManager {
             const ulong offset = gpuAddress + done - mapping.GpuAddress;
             const size_t chunk = cast(size_t) (mapping.Size - offset < source.length - done ? mapping.Size - offset : source.length - done);
             Memory.WriteBytes(mapping.CpuAddress + offset, source[done .. done + chunk]);
+            if (OnWrite !is null) {
+                OnWrite(mapping.CpuAddress + offset, chunk);
+            }
             done += chunk;
         }
     }

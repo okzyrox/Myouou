@@ -117,6 +117,7 @@ struct TextureHeader {
     uint Format() const { return Words[0] & 0x7F; }
     TextureComponent Component(uint index) const { return cast(TextureComponent) ((Words[0] >> (7 + index * 3)) & 7); }
     TextureSwizzle Swizzle(uint index) const { return cast(TextureSwizzle) ((Words[0] >> (19 + index * 3)) & 7); }
+    uint PackedSwizzle() const { return (Words[0] >> 19) & 0xFFF; }
     ulong Address() const { return (cast(ulong) (Words[2] & 0xFFFF) << 32) | Words[1]; }
     TextureHeaderVersion Version() const { return cast(TextureHeaderVersion) ((Words[2] >> 21) & 7); }
     bool BlockLinear() const { return Version == TextureHeaderVersion.BlockLinear || Version == TextureHeaderVersion.BlockLinearColorKey; }

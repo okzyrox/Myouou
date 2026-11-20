@@ -16,6 +16,7 @@ import std.format : format;
 // Core
 import Source.Gpu.Shader.Instructions;
 import Source.Gpu.Shader.Spirv;
+import Source.Gpu.Texture;
 
 // Types
 enum ShaderStageKind {
@@ -58,11 +59,11 @@ class ShaderTranslationException : Exception {
     }
 }
 
-TranslatedShader TranslateShader(ShaderStageKind stage, const(ulong)[] program) {
+TranslatedShader TranslateShader(ShaderStageKind stage, const(ulong)[] program, const(uint[uint]) swizzles = null) {
     TranslatedShader result;
     result.Stage = stage;
     try {
-        ShaderTranslator translator = new ShaderTranslator(stage, program);
+        ShaderTranslator translator = new ShaderTranslator(stage, program, swizzles);
         result.Spirv = translator.Translate();
         result.AttributeMask = translator.attributeMask;
         result.ColorTargetMask = translator.colorTargetMask;
@@ -95,6 +96,7 @@ private final class ShaderTranslator {
     private uint[MaxColorTargets] colorOutputs;
     private uint[uint] constBuffers;
     private uint[uint] samplerVariables;
+    private const(uint[uint]) swizzles;
     private uint position;
     private uint fragCoord;
     private uint vertexIndex;
@@ -104,9 +106,10 @@ private final class ShaderTranslator {
     private uint[] interfaceIds;
     private bool terminated;
 
-    this(ShaderStageKind stage, const(ulong)[] program) {
+    this(ShaderStageKind stage, const(ulong)[] program, const(uint[uint]) swizzles) {
         this.stage = stage;
         this.program = program;
+        this.swizzles = swizzles;
         b = new SpirvBuilder();
         textureOffsets = TextureOffsets(program, ShaderHeaderWords);
     }
@@ -525,7 +528,33 @@ private final class ShaderTranslator {
         return b.Value(SpvOp.ImageSampleExplicitLod, b.Vec4, [image, coords, SpvImageOperandsLod, lod == 0 ? b.ConstantFloat(0) : lod]);
     }
 
-    private void WriteTexel(uint texel, uint mask, uint first, uint second) {
+    private uint Fetch2D(uint offset, uint x, uint y, uint lod) {
+        const uint sampled = b.Load(b.TypeSampledImage(b.TypeImage2D()), SamplerVariable(offset));
+        const uint image = b.Value(SpvOp.Image, b.TypeImage2D(), [sampled]);
+        const uint coords = b.Value(SpvOp.CompositeConstruct, b.TypeVector(b.Int, 2), [ToInt(x), ToInt(y)]);
+        return b.Value(SpvOp.ImageFetch, b.Vec4, [image, coords, SpvImageOperandsLod, ToInt(lod)]);
+    }
+
+    private uint ToInt(uint value) {
+        return b.Value(SpvOp.Bitcast, b.Int, [value]);
+    }
+
+    private uint TexelComponent(uint offset, uint texel, uint component) {
+        uint source = TextureSwizzle.R + component;
+        if (const(uint)* packed = offset in swizzles) {
+            source = (*packed >> (component * 3)) & 7;
+        }
+        switch (source) {
+            case TextureSwizzle.R: .. case TextureSwizzle.A:
+                return b.Value(SpvOp.CompositeExtract, b.Float, [texel, source - TextureSwizzle.R]);
+            case TextureSwizzle.OneInt, TextureSwizzle.OneFloat:
+                return b.ConstantFloat(1); // inaccurate
+            default:
+                return b.ConstantFloat(0);
+        }
+    }
+
+    private void WriteTexel(uint offset, uint texel, uint mask, uint first, uint second) {
         uint written = 0;
         foreach (component; 0 .. 4) {
             if ((mask & (1 << component)) == 0) {
@@ -534,18 +563,24 @@ private final class ShaderTranslator {
             const uint base = written < 2 ? first : second;
             const uint index = written < 2 ? written : written - 2;
             if (base != RegisterZero) {
-                SetRegF(base + index, b.Value(SpvOp.CompositeExtract, b.Float, [texel, component]));
+                SetRegF(base + index, TexelComponent(offset, texel, component));
             }
             written++;
         }
     }
 
-    // todo: needs to also handle other texture formats, like 3d and even stuff like depth test
-    private void EmitTexs(const ref Instruction instruction) {
+    private static uint ScalarMask(const ref Instruction instruction) {
         static immutable uint[8][4] masks = [[0, 0, 0, 0, 0, 0, 0, 0], [0x1, 0x2, 0x4, 0x8, 0x3, 0x9, 0xA, 0xC], [0x1, 0x2, 0x4, 0x8, 0x3, 0x9, 0xA, 0xC], [0x7, 0xB, 0xD, 0xE, 0xF, 0, 0, 0]];
         const uint second = cast(uint) instruction.Bits(28, 8);
+        // TEXS/TLDS use the same 2 register output encoding
         const uint lutIndex = (instruction.Dest != RegisterZero ? 1 : 0) | (second != RegisterZero ? 2 : 0);
-        const uint mask = masks[lutIndex][instruction.Bits(50, 3)];
+        return masks[lutIndex][instruction.Bits(50, 3)];
+    }
+
+    // todo: needs to also handle other texture formats, like 3d and even stuff like depth test
+    private void EmitTexs(const ref Instruction instruction) {
+        const uint second = cast(uint) instruction.Bits(28, 8);
+        const uint mask = ScalarMask(instruction);
         uint texel;
         switch (instruction.Bits(53, 4)) {
             case 1:
@@ -560,7 +595,23 @@ private final class ShaderTranslator {
             default:
                 Fail("Unhandled TEXS type %d at 0x%X!", instruction.Bits(53, 4), instruction.Address);
         }
-        WriteTexel(texel, mask, instruction.Dest, second);
+        WriteTexel(instruction.TextureOffset, texel, mask, instruction.Dest, second);
+    }
+
+    private void EmitTlds(const ref Instruction instruction) {
+        uint texel;
+        // todo: more than 2d fetches?
+        switch (instruction.Bits(53, 4)) {
+            case 2:
+                texel = Fetch2D(instruction.TextureOffset, Reg(instruction.SrcA), Reg(instruction.SrcB), b.ConstantUint(0));
+                break;
+            case 5:
+                texel = Fetch2D(instruction.TextureOffset, Reg(instruction.SrcA), Reg(instruction.SrcA + 1), Reg(instruction.SrcB));
+                break;
+            default:
+                Fail("Unhandled TLDS target %d at 0x%X!", instruction.Bits(53, 4), instruction.Address);
+        }
+        WriteTexel(instruction.TextureOffset, texel, ScalarMask(instruction), instruction.Dest, cast(uint) instruction.Bits(28, 8));
     }
 
     private void EmitTex(const ref Instruction instruction) {
@@ -593,7 +644,7 @@ private final class ShaderTranslator {
                 continue;
             }
             if (instruction.Dest != RegisterZero) {
-                SetRegF(instruction.Dest + written, b.Value(SpvOp.CompositeExtract, b.Float, [texel, component]));
+                SetRegF(instruction.Dest + written, TexelComponent(instruction.TextureOffset, texel, component));
             }
             written++;
         }
@@ -862,6 +913,9 @@ private final class ShaderTranslator {
                 return;
             case Opcode.Tex:
                 EmitTex(instruction);
+                return;
+            case Opcode.Tlds:
+                EmitTlds(instruction);
                 return;
 
             default:

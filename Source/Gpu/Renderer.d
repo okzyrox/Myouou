@@ -274,17 +274,34 @@ final class HostRenderer : GpuRenderer {
         }
         return program;
     }
+    private uint[uint] TextureSwizzles(Maxwell3D engine, ShaderStage stage, const(ulong)[] program) {
+        uint[uint] swizzles;
+        foreach (offset; TextureOffsets(program, ShaderHeaderWords)) {
+            TextureHandle handle;
+            TextureHeader header;
+            // we have to bake these into the translated shader program
+            // since sdlgpu doesnt have a swizzling component..
+            if (engine.ReadTextureHandle(stage, offset, handle) && engine.ReadTextureHeader(handle.HeaderIndex, header)) {
+                swizzles[offset] = header.PackedSwizzle;
+            }
+        }
+        return swizzles;
+    }
 
     // TODO: cache shader programs rather than reload every time
     private CachedShader* Shader(Maxwell3D engine, ShaderStage stage, ShaderStageKind kind) {
         const ulong address = engine.ShaderAddress(stage);
         const ulong[] program = ReadProgram(address);
-        const ulong key = Hash(program) ^ stage;
+        const uint[uint] swizzles = TextureSwizzles(engine, stage, program);
+        ulong key = Hash(program) ^ stage;
+        foreach (offset, swizzle; swizzles) {
+            key ^= Hash([(cast(ulong) offset << 32) | swizzle]);
+        }
         if (CachedShader* found = key in shaders)
             return found.Shader is null ? null : found;
 
         CachedShader cached;
-        cached.Translation = TranslateShader(kind, program);
+        cached.Translation = TranslateShader(kind, program, swizzles);
         if (!cached.Translation.Ok) {
             log.Error("Stage %d shader at gpu 0x%X failed to translate: %s", stage, address, cached.Translation.Error);
             foreach (line; DisassembleProgram(program, ShaderHeaderWords))
