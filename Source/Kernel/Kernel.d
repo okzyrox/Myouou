@@ -41,6 +41,7 @@ import Source.Gpu.Gpu;
 import Source.Gpu.Renderer;
 import Source.Service.Hid;
 import Source.Service.Nvdrv;
+import Source.Service.Psm;
 import Source.Service.Service;
 import Source.Service.Set;
 import Source.Service.Sm;
@@ -197,6 +198,7 @@ final class HorizonKernel {
         Services.Register("appletOE", () => cast(IPCService) new AppletOEService(Applet));
         foreach (name; ["apm", "apm:am", "apm:p"])
             Services.Register(name, ApmFactory(name));
+        Services.Register("psm", () => cast(IPCService) new PsmService());
         Services.Register("hid", () => cast(IPCService) new HidService(Hid));
         foreach (name; ["nvdrv", "nvdrv:a", "nvdrv:s", "nvdrv:t"])
             Services.Register(name, NvdrvFactory(name));
