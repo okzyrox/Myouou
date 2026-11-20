@@ -17,6 +17,7 @@ import std.algorithm : min;
 import std.format : format;
 import std.random : uniform;
 import std.stdio;
+import std.array : byPair;
 
 // Core
 import Source.Util.Logger;
@@ -189,9 +190,9 @@ final class HorizonKernel {
         Services.Register("hid", () => cast(IPCService) new HidService(Hid));
         foreach (name; ["nvdrv", "nvdrv:a", "nvdrv:s", "nvdrv:t"])
             Services.Register(name, NvdrvFactory(name));
-        Services.Register("vi:u", ViFactory("vi:u", 0));
-        Services.Register("vi:s", ViFactory("vi:s", 1));
-        Services.Register("vi:m", ViFactory("vi:m", 2));
+        foreach (viService; ["vi:u": 0, "vi:s": 1, "vi:m": 2].byPair) {
+            Services.Register(viService[0], viService[1]);
+        }
         foreach (name; ["acc:u0", "acc:u1"]) {
             Services.Register(name, AccountFactory(name));
         }
