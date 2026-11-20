@@ -32,6 +32,7 @@ enum Duration MaxIdleSleep = dur!"msecs"(10);
 final class Scheduler {
     KThread Current;
     KThread[] Threads;
+    KEvent[] PeriodicEvents;
 
     private GuestEnvironment environment;
     private DynarmicJit jit;
@@ -55,6 +56,13 @@ final class Scheduler {
         Threads = [main];
         sliceStart = MonoTime.currTime;
         log = GetLogger("Scheduler");
+    }
+
+    // Timers
+    void AddPeriodic(KEvent event, Duration period) {
+        event.Period = period;
+        event.NextSignal = MonoTime.currTime + period;
+        PeriodicEvents ~= event;
     }
 
     // Threads
@@ -149,6 +157,9 @@ final class Scheduler {
 
     private void Poll() {
         const MonoTime now = MonoTime.currTime;
+        foreach (event; PeriodicEvents) {
+            event.Tick(now);
+        }
         foreach (thread; Threads) {
             if (thread.State != ThreadState.Waiting) {
                 continue;
@@ -253,6 +264,12 @@ final class Scheduler {
         if (!anyAlive) {
             log.Info("All guest threads have exited.");
             return false;
+        }
+        foreach (event; PeriodicEvents) {
+            if (!anyDeadline || event.NextSignal < nearest) {
+                nearest = event.NextSignal;
+                anyDeadline = true;
+            }
         }
         if (!anyDeadline) {
             log.Error("Deadlock: every guest thread is blocked without a timeout!");
