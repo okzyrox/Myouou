@@ -1,0 +1,7 @@
+*
+!.gitignore
+!readme.md
+!triangle/*
+!triangle_branched/*
+!colors/*
+!app_test/*

@@ -24,6 +24,7 @@ import Source.Emulator.GuestEnv;
 import Source.Kernel.Ipc;
 import Source.Kernel.Objects;
 import Source.Kernel.Result;
+import Source.Kernel.Scheduler;
 import Source.Kernel.Svc;
 import Source.Memory.Guest;
 import Source.Wrapper.DynarmicJit;
@@ -121,6 +122,7 @@ final class HorizonKernel {
     GuestMemory Memory;
     DynarmicJit Jit;
     HandleTable Handles;
+    Scheduler Threading;
     ServiceRegistry Services;
     AddressSpace Space;
     // TODO: make states service dependents on register
@@ -151,6 +153,8 @@ final class HorizonKernel {
         KThread mainThread = new KThread(1);
         Handles = new HandleTable(process, mainThread);
         Handles.Set(mainThreadHandle, mainThread);
+        mainThread.Handle = mainThreadHandle;
+        Threading = new Scheduler(environment, Memory, Handles, mainThread);
 
         Applet = new AppletState();
         Hid = new HidState();
@@ -201,6 +205,7 @@ final class HorizonKernel {
     bool HandleSvc(uint id) {
         const ulong[31] arguments = Jit.Registers;
         bool keepRunning = true;
+        bool yield = false;
         uint result = ResultSuccess;
 
         switch (id) {
@@ -211,8 +216,10 @@ final class HorizonKernel {
             case Svc.UnmapMemory: result = UnmapMemory(); break;
             case Svc.QueryMemory: result = QueryMemory(); break;
             case Svc.ExitProcess: keepRunning = ExitProcess(); break;
-            case Svc.ExitThread: keepRunning = ExitProcess(); break;
-            case Svc.SleepThread: result = SleepThread(); break;
+            case Svc.CreateThread: result = CreateThread(); break;
+            case Svc.StartThread: result = StartThread(); break;
+            case Svc.ExitThread: Threading.Exit(); break;
+            case Svc.SleepThread: result = SleepThread(yield); break;
             case Svc.GetThreadPriority: result = GetThreadPriority(); break;
             case Svc.SetThreadPriority: result = SetThreadPriority(); break;
             case Svc.GetThreadCoreMask: result = GetThreadCoreMask(); break;
@@ -225,12 +232,12 @@ final class HorizonKernel {
             case Svc.CreateTransferMemory: result = CreateTransferMemory(); break;
             case Svc.CloseHandle: result = CloseHandle(); break;
             case Svc.ResetSignal: result = ResetSignal(); break;
-            case Svc.WaitSynchronization: result = WaitSynchronization(keepRunning); break;
-            case Svc.CancelSynchronization: result = ResultSuccess; break;
+            case Svc.WaitSynchronization: result = WaitSynchronization(); break;
+            case Svc.CancelSynchronization: result = CancelSynchronization(); break;
             case Svc.ArbitrateLock: result = ArbitrateLock(); break;
             case Svc.ArbitrateUnlock: result = ArbitrateUnlock(); break;
-            case Svc.WaitProcessWideKeyAtomic: result = WaitProcessWideKeyAtomic(keepRunning); break;
-            case Svc.SignalProcessWideKey: result = ResultSuccess; break;
+            case Svc.WaitProcessWideKeyAtomic: result = WaitProcessWideKeyAtomic(); break;
+            case Svc.SignalProcessWideKey: result = SignalProcessWideKey(); break;
             case Svc.GetSystemTick:
                 OutVal(0, Environment.GetCntpct());
                 return true;
@@ -256,7 +263,7 @@ final class HorizonKernel {
 
         Jit.Register(0, result);
         SvcLog.Trace("0x%02X %-32s in: X0=0x%X X1=0x%X X2=0x%X -> %s", id, GetSvcName(id), arguments[0], arguments[1], arguments[2], FormatResult(result));
-        return true;
+        return Threading.Reschedule(yield);
     }
 
     private ulong GetArg(size_t index) {
@@ -400,12 +407,42 @@ final class HorizonKernel {
         return false;
     }
 
-    private uint SleepThread() {
+    // Threads
+    private uint CreateThread() {
+        const ulong entry = GetArg(1);
+        const ulong argument = GetArg(2);
+        const ulong stackTop = GetArg(3);
+        const int priority = cast(int) GetArg(4);
+        const int core = cast(int) GetArg(5);
+        if (priority < 0 || priority > 0x3F) {
+            return KernelResult.InvalidCombination;
+        }
+        KThread thread = Threading.Create(entry, argument, stackTop, priority, core);
+        thread.Handle = Handles.Add(thread);
+        OutVal(1, thread.Handle);
+        KernelLog.Trace("Created thread %d (handle 0x%X, entry 0x%X, stack 0x%X) of priority 0x%X", thread.Id, thread.Handle, entry, stackTop, priority);
+        return ResultSuccess;
+    }
+
+    private uint StartThread() {
+        KThread thread = Handles.Get!KThread(cast(uint) GetArg(0));
+        if (thread is null) {
+            return KernelResult.InvalidHandle;
+        }
+        if (thread.State != ThreadState.Created) {
+            return KernelResult.InvalidState;
+        }
+        Threading.Start(thread);
+        return ResultSuccess;
+    }
+
+    private uint SleepThread(ref bool yield) {
         const long nanoseconds = cast(long) GetArg(0);
-        if (nanoseconds > 0)
-            Thread.sleep(dur!"nsecs"(min(nanoseconds, 100_000_000)));
-        else
-            Thread.yield();
+        if (nanoseconds <= 0) {
+            yield = true;
+            return ResultSuccess;
+        }
+        Threading.Block(ThreadWait.Sleep, nanoseconds);
         return ResultSuccess;
     }
 
@@ -523,60 +560,104 @@ final class HorizonKernel {
         return Handles.Remove(handle) ? ResultSuccess : KernelResult.InvalidHandle;
     }
 
-    private uint WaitSynchronization(ref bool keepRunning) {
+    // Synchronization
+    private uint WaitSynchronization() {
         const ulong handlesAddress = GetArg(1);
         const ulong count = GetArg(2);
         const long timeout = cast(long) GetArg(3);
-        if (count > 0x40)
+        if (count > 0x40) {
             return KernelResult.OutOfRange;
+        }
 
+        KObject[] waitables;
         foreach (i; 0 .. count) {
-            const uint handle = Memory.Read!uint(handlesAddress + i * 4);
-            KObject waitable = Handles.Get(handle);
-            if (waitable is null)
+            KObject waitable = Handles.Get(Memory.Read!uint(handlesAddress + i * 4));
+            if (waitable is null) {
                 return KernelResult.InvalidHandle;
+            }
             if (waitable.IsSignaled()) {
                 OutVal(1, i);
                 return ResultSuccess;
             }
+            waitables ~= waitable;
         }
 
-        if (timeout < 0) {
-            KernelLog.Error("WaitSynchronization on %d handle(s) has no timeout!", count);
-            keepRunning = false;
+        KThread current = Threading.Current;
+        if (current.CancelPending) {
+            current.CancelPending = false;
+            return KernelResult.Cancelled;
+        }
+        if (timeout == 0) {
             return KernelResult.TimedOut;
         }
-
-        if (timeout > 0)
-            Thread.sleep(dur!"nsecs"(min(timeout, 100_000_000)));
+        current.WaitObjects = waitables;
+        Threading.Block(ThreadWait.Objects, timeout);
         return KernelResult.TimedOut;
     }
 
+    private uint CancelSynchronization() {
+        KThread thread = Handles.Get!KThread(cast(uint) GetArg(0));
+        if (thread is null) {
+            return KernelResult.InvalidHandle;
+        }
+        if (thread.State == ThreadState.Waiting && thread.Wait == ThreadWait.Objects) {
+            Threading.Wake(thread, KernelResult.Cancelled);
+        } else {
+            thread.CancelPending = true;
+        }
+        return ResultSuccess;
+    }
+
     private uint ArbitrateLock() {
+        const uint ownerHandle = cast(uint) GetArg(0);
         const ulong address = GetArg(1);
         const uint tag = cast(uint) GetArg(2);
-        Memory.Write!uint(address, tag);
+        if (Memory.Read!uint(address) != (ownerHandle | MutexWaitersBit)) {
+            // owner handle is held if the guest is waiting with the waitersbit
+            return ResultSuccess;
+        }
+        if (Handles.Get!KThread(ownerHandle) is null) {
+            return KernelResult.InvalidHandle;
+        }
+        KThread current = Threading.Current;
+        current.MutexAddress = address;
+        current.Tag = tag;
+        Threading.Block(ThreadWait.Mutex, -1);
         return ResultSuccess;
     }
 
     private uint ArbitrateUnlock() {
-        Memory.Write!uint(GetArg(0), 0);
+        Threading.ReleaseMutex(GetArg(0));
         return ResultSuccess;
     }
 
-    private uint WaitProcessWideKeyAtomic(ref bool keepRunning) {
+    private uint WaitProcessWideKeyAtomic() {
         const ulong mutexAddress = GetArg(0);
+        const ulong key = GetArg(1);
         const uint tag = cast(uint) GetArg(2);
         const long timeout = cast(long) GetArg(3);
-        if (timeout < 0) {
-            KernelLog.Error("WaitProcessWideKeyAtomic has no timeout on single thread!");
-            keepRunning = false;
-            return KernelResult.TimedOut;
-        }
-        if (timeout > 0)
-            Thread.sleep(dur!"nsecs"(min(timeout, 100_000_000)));
-        Memory.Write!uint(mutexAddress, tag);
+        Threading.ReleaseMutex(mutexAddress);
+        KThread current = Threading.Current;
+        current.WaitAddress = key;
+        current.MutexAddress = mutexAddress;
+        current.Tag = tag;
+        Memory.Write!uint(key, 1);
+        Threading.Block(ThreadWait.CondVar, timeout);
         return KernelResult.TimedOut;
+    }
+
+    private uint SignalProcessWideKey() {
+        const ulong key = GetArg(0);
+        const int count = cast(int) GetArg(1);
+        KThread[] waiters = Threading.Waiters(ThreadWait.CondVar, key);
+        const size_t woken = count <= 0 || count > waiters.length ? waiters.length : count;
+        foreach (thread; waiters[0 .. woken]) {
+            Threading.SignalCondVar(thread);
+        }
+        if (woken == waiters.length) {
+            Memory.Write!uint(key, 0);
+        }
+        return ResultSuccess;
     }
 
     private uint ConnectToNamedPort() {
