@@ -48,6 +48,7 @@ struct TranslatedShader {
     uint AttributeMask;
     uint ColorTargetMask;
     uint[] ConstBuffers;
+    uint[] Textures;
     size_t InstructionCount;
 }
 
@@ -66,6 +67,7 @@ TranslatedShader TranslateShader(ShaderStageKind stage, const(ulong)[] program) 
         result.AttributeMask = translator.attributeMask;
         result.ColorTargetMask = translator.colorTargetMask;
         result.ConstBuffers = translator.constBufferOrder;
+        result.Textures = translator.textureOffsets;
         result.InstructionCount = translator.instructionCount;
         result.Ok = true;
     } catch (ShaderTranslationException exception) {
@@ -83,6 +85,7 @@ private final class ShaderTranslator {
     uint attributeMask;
     uint colorTargetMask;
     uint[] constBufferOrder;
+    uint[] textureOffsets;
     size_t instructionCount;
 
     private uint[256] registers;
@@ -91,6 +94,7 @@ private final class ShaderTranslator {
     private uint[MaxVaryings] varyings;
     private uint[MaxColorTargets] colorOutputs;
     private uint[uint] constBuffers;
+    private uint[uint] samplerVariables;
     private uint position;
     private uint fragCoord;
     private uint vertexIndex;
@@ -104,6 +108,7 @@ private final class ShaderTranslator {
         this.stage = stage;
         this.program = program;
         b = new SpirvBuilder();
+        textureOffsets = TextureOffsets(program, ShaderHeaderWords);
     }
 
     private void Fail(A...)(string text, A args) {
@@ -182,7 +187,7 @@ private final class ShaderTranslator {
         b.MemberDecorate(block, 0, SpvDecoration.NonWritable);
         const uint variable = b.GlobalVariable(b.TypePointer(SpvStorage.Uniform, block), SpvStorage.Uniform);
         b.Decorate(variable, SpvDecoration.DescriptorSet, [stage == ShaderStageKind.Vertex ? 0 : 2]); // fragment storage buffers at set 2
-        b.Decorate(variable, SpvDecoration.Binding, [cast(uint) constBufferOrder.length]);
+        b.Decorate(variable, SpvDecoration.Binding, [cast(uint) (textureOffsets.length + constBufferOrder.length)]);
         b.Name(variable, format("cbuf%d", index));
         constBuffers[index] = variable;
         constBufferOrder ~= index;
@@ -488,6 +493,112 @@ private final class ShaderTranslator {
         }
     }
 
+    // Textures
+    private uint SamplerVariable(uint offset) {
+        if (uint* found = offset in samplerVariables) {
+            return *found;
+        }
+        uint binding = uint.max;
+        foreach (i, known; textureOffsets) {
+            if (known == offset) {
+                binding = cast(uint) i;
+            }
+        }
+        if (binding == uint.max) {
+            Fail("Texture at cbuf offset 0x%X was not found!", offset);
+        }
+        const uint type = b.TypeSampledImage(b.TypeImage2D());
+        const uint variable = b.GlobalVariable(b.TypePointer(SpvStorage.UniformConstant, type), SpvStorage.UniformConstant);
+        b.Decorate(variable, SpvDecoration.DescriptorSet, [stage == ShaderStageKind.Vertex ? 0 : 2]);
+        b.Decorate(variable, SpvDecoration.Binding, [binding]);
+        b.Name(variable, format("tex%X", offset));
+        samplerVariables[offset] = variable;
+        return variable;
+    }
+
+    private uint Sample2D(uint offset, uint x, uint y, uint lod) {
+        const uint image = b.Load(b.TypeSampledImage(b.TypeImage2D()), SamplerVariable(offset));
+        const uint coords = b.Value(SpvOp.CompositeConstruct, b.TypeVector(b.Float, 2), [x, y]);
+        if (lod == 0 && stage == ShaderStageKind.Fragment) {
+            return b.Value(SpvOp.ImageSampleImplicitLod, b.Vec4, [image, coords]);
+        }
+        return b.Value(SpvOp.ImageSampleExplicitLod, b.Vec4, [image, coords, SpvImageOperandsLod, lod == 0 ? b.ConstantFloat(0) : lod]);
+    }
+
+    private void WriteTexel(uint texel, uint mask, uint first, uint second) {
+        uint written = 0;
+        foreach (component; 0 .. 4) {
+            if ((mask & (1 << component)) == 0) {
+                continue;
+            }
+            const uint base = written < 2 ? first : second;
+            const uint index = written < 2 ? written : written - 2;
+            if (base != RegisterZero) {
+                SetRegF(base + index, b.Value(SpvOp.CompositeExtract, b.Float, [texel, component]));
+            }
+            written++;
+        }
+    }
+
+    // todo: needs to also handle other texture formats, like 3d and even stuff like depth test
+    private void EmitTexs(const ref Instruction instruction) {
+        static immutable uint[8][4] masks = [[0, 0, 0, 0, 0, 0, 0, 0], [0x1, 0x2, 0x4, 0x8, 0x3, 0x9, 0xA, 0xC], [0x1, 0x2, 0x4, 0x8, 0x3, 0x9, 0xA, 0xC], [0x7, 0xB, 0xD, 0xE, 0xF, 0, 0, 0]];
+        const uint second = cast(uint) instruction.Bits(28, 8);
+        const uint lutIndex = (instruction.Dest != RegisterZero ? 1 : 0) | (second != RegisterZero ? 2 : 0);
+        const uint mask = masks[lutIndex][instruction.Bits(50, 3)];
+        uint texel;
+        switch (instruction.Bits(53, 4)) {
+            case 1:
+                texel = Sample2D(instruction.TextureOffset, RegF(instruction.SrcA), RegF(instruction.SrcB), 0);
+                break;
+            case 2:
+                texel = Sample2D(instruction.TextureOffset, RegF(instruction.SrcA), RegF(instruction.SrcB), b.ConstantFloat(0));
+                break;
+            case 3:
+                texel = Sample2D(instruction.TextureOffset, RegF(instruction.SrcA), RegF(instruction.SrcA + 1), RegF(instruction.SrcB));
+                break;
+            default:
+                Fail("Unhandled TEXS type %d at 0x%X!", instruction.Bits(53, 4), instruction.Address);
+        }
+        WriteTexel(texel, mask, instruction.Dest, second);
+    }
+
+    private void EmitTex(const ref Instruction instruction) {
+        if (instruction.Bits(28, 3) != 2) {
+            Fail("TEX dim %d at 0x%X!", instruction.Bits(28, 3), instruction.Address);
+        }
+        if (instruction.Bit(50) || instruction.Bit(54)) {
+            Fail("TEX with set depth compare or offsets at 0x%X!", instruction.Address);
+        }
+        const uint x = RegF(instruction.SrcA);
+        const uint y = RegF(instruction.SrcA + 1);
+        uint texel;
+        switch (instruction.Bits(55, 3)) {
+            case 0:
+                texel = Sample2D(instruction.TextureOffset, x, y, 0);
+                break;
+            case 1:
+                texel = Sample2D(instruction.TextureOffset, x, y, b.ConstantFloat(0));
+                break;
+            case 3:
+                texel = Sample2D(instruction.TextureOffset, x, y, RegF(instruction.SrcB));
+                break;
+            default:
+                Fail("Unhandled TEX lod mode %d at 0x%X!", instruction.Bits(55, 3), instruction.Address);
+        }
+        const uint mask = cast(uint) instruction.Bits(31, 4);
+        uint written = 0;
+        foreach (component; 0 .. 4) {
+            if ((mask & (1 << component)) == 0) {
+                continue;
+            }
+            if (instruction.Dest != RegisterZero) {
+                SetRegF(instruction.Dest + written, b.Value(SpvOp.CompositeExtract, b.Float, [texel, component]));
+            }
+            written++;
+        }
+    }
+
     // Instruction translation
     private void Emit(const ref Instruction instruction) {
         switch (instruction.Op) {
@@ -744,6 +855,13 @@ private final class ShaderTranslator {
             }
             case Opcode.S2r:
                 SetReg(instruction.Dest, b.ConstantUint(0));
+                return;
+
+            case Opcode.Texs:
+                EmitTexs(instruction);
+                return;
+            case Opcode.Tex:
+                EmitTex(instruction);
                 return;
 
             default:
