@@ -107,6 +107,7 @@ final class HostRenderer : GpuRenderer {
     private GpuMemoryManager memory;
     // TODO: host render targets are never written back to guest memory
     private RenderTargetTexture[ulong] targets;
+    private RenderTargetTexture[ulong] depthTargets;
     private CachedShader[ulong] shaders;
     private SDL_GPUGraphicsPipeline*[string] pipelines;
     private bool[string] failures;
@@ -208,8 +209,101 @@ final class HostRenderer : GpuRenderer {
 
     // Clears
     
-    // TODO: depth and stencil
+    // Depth targets
+    private SDL_GPUTextureFormat HostDepthFormat(uint format) {
+        switch (format) {
+            case 0x0A:
+                return SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+            case 0x13:
+                return SDL_GPU_TEXTUREFORMAT_D16_UNORM;
+            case 0x14, 0x15, 0x16, 0x18:
+                // D24S8 is not available on some hosts, so it falls back to D32float with stencil
+                if (SDL_GPUTextureSupportsFormat(Device, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)) {
+                    return SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT;
+                }
+                return SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
+            case 0x19:
+                return SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
+            default:
+                return SDL_GPU_TEXTUREFORMAT_INVALID;
+        }
+    }
+
+    private static bool HasStencil(SDL_GPUTextureFormat format) {
+        return format == SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT || format == SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
+    }
+
+    // todo: depth targets live only on the host, so guest reads or samples of them see nothing
+    private RenderTargetTexture* ZetaTarget(Maxwell3D engine) {
+        DepthTarget guest;
+        if (!engine.Zeta(guest)) {
+            return null;
+        }
+        ulong address;
+        if (!memory.Translate(guest.Address, address)) {
+            return null;
+        }
+        const SDL_GPUTextureFormat hostFormat = HostDepthFormat(guest.Format);
+        if (hostFormat == SDL_GPU_TEXTUREFORMAT_INVALID) {
+            FailOnce(format("zeta%X", guest.Format), "Depth format 0x%X has no host format!", guest.Format);
+            return null;
+        }
+
+        RenderTargetTexture* existing = address in depthTargets;
+        if (existing !is null && existing.Width == guest.Width && existing.Height == guest.Height && existing.Format == hostFormat) {
+            return existing;
+        }
+        if (existing !is null) {
+            SDL_ReleaseGPUTexture(Device, existing.Texture);
+        }
+
+        SDL_GPUTextureCreateInfo info;
+        info.type = SDL_GPU_TEXTURETYPE_2D;
+        info.format = hostFormat;
+        info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+        info.width = guest.Width;
+        info.height = guest.Height;
+        SDL_GPUTexture* texture = SDL_CreateGPUTexture(Device, &info);
+        if (texture is null) {
+            log.Error("Depth target creation failed (%s)!", fromStringz(SDL_GetError()));
+            return null;
+        }
+        log.Info("Got host depth target %dx%d format 0x%X (%s) for guest 0x%X!", guest.Width, guest.Height, guest.Format, hostFormat, address);
+        depthTargets[address] = RenderTargetTexture(texture, guest.Width, guest.Height, hostFormat);
+        return address in depthTargets;
+    }
+
+    // Clears
     bool Clear(Maxwell3D engine, uint argument) {
+        const bool depth = (argument & 1) != 0;
+        const bool stencil = (argument & 2) != 0;
+        if ((depth || stencil) && Ready()) {
+            ClearDepthStencil(engine, depth, stencil);
+        }
+        return ClearColor(engine, argument);
+    }
+
+    private void ClearDepthStencil(Maxwell3D engine, bool depth, bool stencil) {
+        RenderTargetTexture* target = ZetaTarget(engine);
+        if (target is null) {
+            return;
+        }
+        SDL_GPUDepthStencilTargetInfo info;
+        info.texture = target.Texture;
+        info.clearDepth = engine.RegisterFloat(Maxwell3DMethod.ClearDepth);
+        info.clearStencil = cast(ubyte) engine.Registers[Maxwell3DMethod.ClearStencil];
+        info.loadOp = depth ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
+        info.storeOp = SDL_GPU_STOREOP_STORE;
+        info.stencilLoadOp = stencil ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
+        info.stencilStoreOp = SDL_GPU_STOREOP_STORE;
+
+        SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(Device);
+        SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(commands, null, 0, &info);
+        SDL_EndGPURenderPass(pass);
+        SDL_SubmitGPUCommandBuffer(commands);
+    }
+
+    private bool ClearColor(Maxwell3D engine, uint argument) {
         const uint index = (argument >> 6) & 0xF;
         if ((argument & 0x3C) == 0 || index >= RenderTargetCount)
             return true;
@@ -274,6 +368,7 @@ final class HostRenderer : GpuRenderer {
         }
         return program;
     }
+
     private uint[uint] TextureSwizzles(Maxwell3D engine, ShaderStage stage, const(ulong)[] program) {
         uint[uint] swizzles;
         foreach (offset; TextureOffsets(program, ShaderHeaderWords)) {
@@ -534,8 +629,103 @@ final class HostRenderer : GpuRenderer {
         }
     }
 
-    private SDL_GPUGraphicsPipeline* Pipeline(Maxwell3D engine, CachedShader* vertex, CachedShader* fragment, const ref VertexLayout layout,
-                                              SDL_GPUPrimitiveType primitive, const(RenderTargetTexture*)[] colorTargets, bool lowerLeft) {
+    private SDL_GPUBlendFactor BlendFactor(uint factor) {
+        switch (factor) {
+            case 0x1, 0x4000: return SDL_GPU_BLENDFACTOR_ZERO;
+            case 0x2, 0x4001: return SDL_GPU_BLENDFACTOR_ONE;
+            case 0x3, 0x4300: return SDL_GPU_BLENDFACTOR_SRC_COLOR;
+            case 0x4, 0x4301: return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR;
+            case 0x5, 0x4302: return SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+            case 0x6, 0x4303: return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+            case 0x7, 0x4304: return SDL_GPU_BLENDFACTOR_DST_ALPHA;
+            case 0x8, 0x4305: return SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA;
+            case 0x9, 0x4306: return SDL_GPU_BLENDFACTOR_DST_COLOR;
+            case 0xA, 0x4307: return SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_COLOR;
+            case 0xB, 0x4308: return SDL_GPU_BLENDFACTOR_SRC_ALPHA_SATURATE;
+            // should be constantalpha factors but sdlgpu doesnt support it from the looks of it
+            case 0xE, 0xC001, 0xC003: return SDL_GPU_BLENDFACTOR_CONSTANT_COLOR;
+            case 0xF, 0xC002, 0xC004: return SDL_GPU_BLENDFACTOR_ONE_MINUS_CONSTANT_COLOR;
+            default:
+                FailOnce(format("blendfactor%X", factor), "Unsupported blend factor 0x%X!", factor);
+                return SDL_GPU_BLENDFACTOR_ONE;
+        }
+    }
+
+    private SDL_GPUBlendOp BlendOp(uint equation) {
+        switch (equation) {
+            case 1, 0x8006: return SDL_GPU_BLENDOP_ADD;
+            case 2, 0x800A: return SDL_GPU_BLENDOP_SUBTRACT;
+            case 3, 0x800B: return SDL_GPU_BLENDOP_REVERSE_SUBTRACT;
+            case 4, 0x8007: return SDL_GPU_BLENDOP_MIN;
+            case 5, 0x8008: return SDL_GPU_BLENDOP_MAX;
+            default:
+                FailOnce(format("blendop%X", equation), "Unsupported blend equation 0x%X!", equation);
+                return SDL_GPU_BLENDOP_ADD;
+        }
+    }
+
+    private SDL_GPUCompareOp CompareOp(uint func) {
+        switch (func) {
+            case 1, 0x200: return SDL_GPU_COMPAREOP_NEVER;
+            case 2, 0x201: return SDL_GPU_COMPAREOP_LESS;
+            case 3, 0x202: return SDL_GPU_COMPAREOP_EQUAL;
+            case 4, 0x203: return SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+            case 5, 0x204: return SDL_GPU_COMPAREOP_GREATER;
+            case 6, 0x205: return SDL_GPU_COMPAREOP_NOT_EQUAL;
+            case 7, 0x206: return SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;
+            case 8, 0x207: return SDL_GPU_COMPAREOP_ALWAYS;
+            default:
+                FailOnce(format("compare%X", func), "Unsupported compare function 0x%X!", func);
+                return SDL_GPU_COMPAREOP_ALWAYS;
+        }
+    }
+
+    private SDL_GPUStencilOp StencilOp(uint op) {
+        switch (op) {
+            case 1, 0x1E00: return SDL_GPU_STENCILOP_KEEP;
+            case 2, 0: return SDL_GPU_STENCILOP_ZERO;
+            case 3, 0x1E01: return SDL_GPU_STENCILOP_REPLACE;
+            case 4, 0x1E02: return SDL_GPU_STENCILOP_INCREMENT_AND_CLAMP;
+            case 5, 0x1E03: return SDL_GPU_STENCILOP_DECREMENT_AND_CLAMP;
+            case 6, 0x150A: return SDL_GPU_STENCILOP_INVERT;
+            case 7, 0x8507: return SDL_GPU_STENCILOP_INCREMENT_AND_WRAP;
+            case 8, 0x8508: return SDL_GPU_STENCILOP_DECREMENT_AND_WRAP;
+            default:
+                FailOnce(format("stencilop%X", op), "Unsupported stencil op 0x%X!", op);
+                return SDL_GPU_STENCILOP_KEEP;
+        }
+    }
+
+    private SDL_GPUStencilOpState StencilOpState(const ref StencilFace face) {
+        SDL_GPUStencilOpState state;
+        state.failOp = StencilOp(face.Fail);
+        state.depthFailOp = StencilOp(face.DepthFail);
+        state.passOp = StencilOp(face.Pass);
+        state.compareOp = CompareOp(face.Func);
+        return state;
+    }
+
+    
+    private SDL_GPUDepthStencilState DepthStencilState(Maxwell3D engine, bool hasStencil) {
+        SDL_GPUDepthStencilState state;
+        state.enableDepthTest = engine.Registers[Maxwell3DMethod.DepthTestEnable] != 0;
+        state.enableDepthWrite = engine.Registers[Maxwell3DMethod.DepthWriteEnable] != 0;
+        state.compareOp = state.enableDepthTest ? CompareOp(engine.Registers[Maxwell3DMethod.DepthFunc]) : SDL_GPU_COMPAREOP_ALWAYS;
+        if (hasStencil && engine.Registers[Maxwell3DMethod.StencilEnable] != 0) {
+            const StencilFace front = engine.Stencil(false);
+            const StencilFace back = engine.Stencil(true);
+            state.enableStencilTest = true;
+            state.frontStencilState = StencilOpState(front);
+            state.backStencilState = StencilOpState(back);
+            // todo: SDL has only one compare mask, write mask and reference for both faces
+            // so the back face uses the front face..
+            state.compareMask = cast(ubyte) front.CompareMask;
+            state.writeMask = cast(ubyte) front.WriteMask;
+        }
+        return state;
+    }
+
+    private SDL_GPUGraphicsPipeline* Pipeline(Maxwell3D engine, CachedShader* vertex, CachedShader* fragment, const ref VertexLayout layout, SDL_GPUPrimitiveType primitive, const(RenderTargetTexture*)[] colorTargets, const(RenderTargetTexture)* depthTarget, bool lowerLeft) {
         SDL_GPUColorTargetDescription[RenderTargetCount] descriptions;
         string key = format("%s|%s|%d", vertex.Shader, fragment.Shader, primitive);
         foreach (i, target; colorTargets) {
@@ -545,6 +735,17 @@ final class HostRenderer : GpuRenderer {
             descriptions[i].blendState.colourWriteMask = cast(ubyte) (((mask & 1) ? SDL_GPU_COLORCOMPONENT_R : 0) | ((mask & 0x10) ? SDL_GPU_COLORCOMPONENT_G : 0)
                 | ((mask & 0x100) ? SDL_GPU_COLORCOMPONENT_B : 0) | ((mask & 0x1000) ? SDL_GPU_COLORCOMPONENT_A : 0));
             key ~= format("|rt%d:%d", target.Format, mask);
+            const BlendState blend = engine.Blend(cast(uint) i);
+            if (blend.Enabled) {
+                descriptions[i].blendState.enableBlend = true;
+                descriptions[i].blendState.colourBlendOp = BlendOp(blend.EquationRgb);
+                descriptions[i].blendState.srcColourBlendFactor = BlendFactor(blend.SourceRgb);
+                descriptions[i].blendState.dstColourBlendFactor = BlendFactor(blend.DestRgb);
+                descriptions[i].blendState.alphaBlendOp = BlendOp(blend.EquationAlpha);
+                descriptions[i].blendState.srcAlphaBlendFactor = BlendFactor(blend.SourceAlpha);
+                descriptions[i].blendState.dstAlphaBlendFactor = BlendFactor(blend.DestAlpha);
+                key ~= format("|blend%X:%X:%X:%X:%X:%X", blend.EquationRgb, blend.SourceRgb, blend.DestRgb, blend.EquationAlpha, blend.SourceAlpha, blend.DestAlpha);
+            }
         }
         foreach (i; 0 .. layout.BufferCount)
             key ~= format("|vb%d", layout.Buffers[i].pitch);
@@ -555,6 +756,12 @@ final class HostRenderer : GpuRenderer {
         const uint cullFace = engine.Registers[Maxwell3DMethod.CullFace];
         const bool counterClockwise = (engine.Registers[Maxwell3DMethod.FrontFace] != GuestFrontFace.Clockwise) != lowerLeft;
         key ~= format("|cull%d:%X:%d", cull, cullFace, counterClockwise);
+
+        SDL_GPUDepthStencilState depthState;
+        if (depthTarget !is null) {
+            depthState = DepthStencilState(engine, HasStencil(depthTarget.Format));
+            key ~= format("|zeta%d:%s", depthTarget.Format, depthState);
+        }
 
         if (SDL_GPUGraphicsPipeline** found = key in pipelines)
             return *found;
@@ -572,6 +779,11 @@ final class HostRenderer : GpuRenderer {
         info.rasteriserState.frontFace = counterClockwise ? SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE : SDL_GPU_FRONTFACE_CLOCKWISE;
         info.targetInfo.colourTargetDescriptions = descriptions.ptr;
         info.targetInfo.numColourTargets = cast(uint) colorTargets.length;
+        if (depthTarget !is null) {
+            info.targetInfo.hasDepthStencilTarget = true;
+            info.targetInfo.depthStencilFormat = depthTarget.Format;
+            info.depthStencilState = depthState;
+        }
 
         SDL_GPUGraphicsPipeline* pipeline = SDL_CreateGPUGraphicsPipeline(Device, &info);
         if (pipeline is null)
@@ -686,7 +898,13 @@ final class HostRenderer : GpuRenderer {
         float[4] viewParams;
         SDL_GPUViewport viewport = Viewport(engine, colorTargets[0], lowerLeft, viewParams);
 
-        SDL_GPUGraphicsPipeline* pipeline = Pipeline(engine, vertex, fragment, layout, primitive, colorTargets, lowerLeft);
+        RenderTargetTexture* depthTarget = ZetaTarget(engine);
+        if (depthTarget !is null && (depthTarget.Width != colorTargets[0].Width || depthTarget.Height != colorTargets[0].Height)) {
+            FailOnce(format("zetasize%dx%d", depthTarget.Width, depthTarget.Height), "Depth target %dx%d doesnt match colour target %dx%d.", depthTarget.Width, depthTarget.Height, colorTargets[0].Width, colorTargets[0].Height);
+            depthTarget = null;
+        }
+
+        SDL_GPUGraphicsPipeline* pipeline = Pipeline(engine, vertex, fragment, layout, primitive, colorTargets, depthTarget, lowerLeft);
         if (pipeline is null)
             return false;
 
@@ -743,9 +961,21 @@ final class HostRenderer : GpuRenderer {
             colorInfos[i].loadOp = SDL_GPU_LOADOP_LOAD;
             colorInfos[i].storeOp = SDL_GPU_STOREOP_STORE;
         }
-        SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(commands, colorInfos.ptr, cast(uint) colorTargets.length, null);
+        SDL_GPUDepthStencilTargetInfo depthInfo;
+        if (depthTarget !is null) {
+            depthInfo.texture = depthTarget.Texture;
+            depthInfo.loadOp = SDL_GPU_LOADOP_LOAD;
+            depthInfo.storeOp = SDL_GPU_STOREOP_STORE;
+            depthInfo.stencilLoadOp = SDL_GPU_LOADOP_LOAD;
+            depthInfo.stencilStoreOp = SDL_GPU_STOREOP_STORE;
+        }
+        SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(commands, colorInfos.ptr, cast(uint) colorTargets.length, depthTarget !is null ? &depthInfo : null);
+        if (depthTarget !is null) {
+            SDL_SetGPUStencilReference(pass, cast(ubyte) engine.Stencil(false).Reference);
+        }
         SDL_BindGPUGraphicsPipeline(pass, pipeline);
         SDL_SetGPUViewport(pass, &viewport);
+        SDL_SetGPUBlendConstants(pass, SDL_FColor(engine.BlendColor(0), engine.BlendColor(1), engine.BlendColor(2), engine.BlendColor(3)));
         if (layout.BufferCount > 0)
             SDL_BindGPUVertexBuffers(pass, 0, vertexBindings.ptr, layout.BufferCount);
         if (vertexStorage.length > 0)

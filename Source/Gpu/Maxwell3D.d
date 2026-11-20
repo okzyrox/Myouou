@@ -37,9 +37,38 @@ enum Maxwell3DMethod : uint {
     ClearColor = 0x360,
     ClearDepth = 0x364,
     ClearStencil = 0x368,
+    StencilBackReference = 0x3D5,
+    StencilBackWriteMask = 0x3D6,
+    StencilBackCompareMask = 0x3D7,
+    ZetaAddressHigh = 0x3F8,
+    ZetaAddressLow = 0x3F9,
+    ZetaFormat = 0x3FA,
     VertexAttributeFormats = 0x458,
     RenderTargetControl = 0x487,
+    ZetaWidth = 0x48A,
+    ZetaHeight = 0x48B,
     LinkedTsc = 0x48D,
+    DepthTestEnable = 0x4B3,
+    IndependentBlendEnable = 0x4B9,
+    DepthWriteEnable = 0x4BA,
+    DepthFunc = 0x4C3,
+    BlendColor = 0x4C7,
+    BlendSeparateAlpha = 0x4CF,
+    BlendEquationRgb = 0x4D0,
+    BlendSourceRgb = 0x4D1,
+    BlendDestRgb = 0x4D2,
+    BlendEquationAlpha = 0x4D3,
+    BlendSourceAlpha = 0x4D4,
+    BlendDestAlpha = 0x4D6,
+    BlendEnable = 0x4D8,
+    StencilEnable = 0x4E0,
+    StencilFrontFail = 0x4E1,
+    StencilFrontDepthFail = 0x4E2,
+    StencilFrontPass = 0x4E3,
+    StencilFrontFunc = 0x4E4,
+    StencilFrontReference = 0x4E5,
+    StencilFrontCompareMask = 0x4E6,
+    StencilFrontWriteMask = 0x4E7,
     WindowOrigin = 0x4EB,
     TexSamplerPoolHigh = 0x557,
     TexSamplerPoolLow = 0x558,
@@ -47,6 +76,12 @@ enum Maxwell3DMethod : uint {
     TexHeaderPoolHigh = 0x55D,
     TexHeaderPoolLow = 0x55E,
     TexHeaderPoolLimit = 0x55F,
+    ZetaEnable = 0x54E,
+    StencilTwoSided = 0x565,
+    StencilBackFail = 0x566,
+    StencilBackDepthFail = 0x567,
+    StencilBackPass = 0x568,
+    StencilBackFunc = 0x569,
     ProgramRegionHigh = 0x582,
     ProgramRegionLow = 0x583,
     DrawEnd = 0x585,
@@ -65,6 +100,7 @@ enum Maxwell3DMethod : uint {
     QuerySequence = 0x6C2,
     QueryGet = 0x6C3,
     VertexArrays = 0x700,
+    IndependentBlend = 0x780,
     VertexArrayLimits = 0x7C0,
     ShaderStages = 0x800,
     ConstBufferSize = 0x8E0,
@@ -90,6 +126,33 @@ enum ShaderStage : uint {
 
 uint ConstBufferStage(ShaderStage stage) {
     return stage == ShaderStage.VertexA ? 0 : stage - 1;
+}
+
+struct DepthTarget {
+    ulong Address;
+    uint Width;
+    uint Height;
+    uint Format;
+}
+
+struct StencilFace {
+    uint Fail;
+    uint DepthFail;
+    uint Pass;
+    uint Func;
+    uint Reference;
+    uint CompareMask;
+    uint WriteMask;
+}
+
+struct BlendState {
+    bool Enabled;
+    uint EquationRgb;
+    uint SourceRgb;
+    uint DestRgb;
+    uint EquationAlpha;
+    uint SourceAlpha;
+    uint DestAlpha;
 }
 
 struct ConstBufferBinding {
@@ -258,6 +321,49 @@ final class Maxwell3D : GpuEngine, MacroHost {
         target.BlockHeightLog2 = (Registers[base + 5] >> 4) & 0xF;
         target.PitchLinear = (Registers[base + 5] & (1 << 12)) != 0;
         return target;
+    }
+
+    BlendState Blend(uint target) const {
+        BlendState state;
+        state.Enabled = Registers[Maxwell3DMethod.BlendEnable + target] != 0;
+        uint base = Maxwell3DMethod.BlendSeparateAlpha;
+        uint[7] fields = [0, 1, 2, 3, 4, 5, 7];
+        if (Registers[Maxwell3DMethod.IndependentBlendEnable] != 0) {
+            base = Maxwell3DMethod.IndependentBlend + target * 8;
+            fields = [0, 1, 2, 3, 4, 5, 6];
+        }
+        state.EquationRgb = Registers[base + fields[1]];
+        state.SourceRgb = Registers[base + fields[2]];
+        state.DestRgb = Registers[base + fields[3]];
+        state.EquationAlpha = state.EquationRgb;
+        state.SourceAlpha = state.SourceRgb;
+        state.DestAlpha = state.DestRgb;
+        if (Registers[base + fields[0]] != 0) {
+            state.EquationAlpha = Registers[base + fields[4]];
+            state.SourceAlpha = Registers[base + fields[5]];
+            state.DestAlpha = Registers[base + fields[6]];
+        }
+        return state;
+    }
+
+    bool Zeta(out DepthTarget target) const {
+        if (Registers[Maxwell3DMethod.ZetaEnable] == 0) {
+            return false;
+        }
+        target = DepthTarget(Address(Maxwell3DMethod.ZetaAddressHigh), Registers[Maxwell3DMethod.ZetaWidth], Registers[Maxwell3DMethod.ZetaHeight], Registers[Maxwell3DMethod.ZetaFormat]);
+        return target.Address != 0 && target.Width != 0 && target.Height != 0;
+    }
+
+    // One-sided stencil uses the front state for both faces
+    StencilFace Stencil(bool back) const {
+        if (!back || Registers[Maxwell3DMethod.StencilTwoSided] == 0) {
+            return StencilFace(Registers[Maxwell3DMethod.StencilFrontFail], Registers[Maxwell3DMethod.StencilFrontDepthFail], Registers[Maxwell3DMethod.StencilFrontPass], Registers[Maxwell3DMethod.StencilFrontFunc], Registers[Maxwell3DMethod.StencilFrontReference], Registers[Maxwell3DMethod.StencilFrontCompareMask], Registers[Maxwell3DMethod.StencilFrontWriteMask]);
+        }
+        return StencilFace(Registers[Maxwell3DMethod.StencilBackFail], Registers[Maxwell3DMethod.StencilBackDepthFail], Registers[Maxwell3DMethod.StencilBackPass], Registers[Maxwell3DMethod.StencilBackFunc], Registers[Maxwell3DMethod.StencilBackReference], Registers[Maxwell3DMethod.StencilBackCompareMask], Registers[Maxwell3DMethod.StencilBackWriteMask]);
+    }
+
+    float BlendColor(uint component) const {
+        return RegisterFloat(Maxwell3DMethod.BlendColor + component);
     }
 
     // Textures
