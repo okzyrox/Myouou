@@ -31,6 +31,8 @@ import Source.Wrapper.DynarmicJit;
 // Services
 import Source.Service.Am;
 import Source.Service.Apm;
+import Source.Gpu.Gpu;
+import Source.Gpu.Renderer;
 import Source.Service.Hid;
 import Source.Service.Nvdrv;
 import Source.Service.Service;
@@ -123,6 +125,7 @@ final class HorizonKernel {
     // TODO: make states service dependents on register
     AppletState Applet;
     HidState Hid;
+    Gpu Graphics;
     NvState Nv;
     ViState Vi;
     HostDisplay Display;
@@ -151,7 +154,9 @@ final class HorizonKernel {
         Hid = new HidState();
         Display = new HostDisplay();
         Display.OnInputCallback = &Hid.WriteNpadInput;
-        Nv = new NvState();
+        Graphics = new Gpu(Memory);
+        Graphics.ThreeD.Renderer = new HostRenderer(Display, Graphics.MemoryManager);
+        Nv = new NvState(Graphics);
         Vi = new ViState(Memory, Nv, Display);
         Services = new ServiceRegistry();
         RegisterServices();
