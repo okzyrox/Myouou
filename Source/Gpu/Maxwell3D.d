@@ -14,6 +14,7 @@ module Source.Gpu.Maxwell3D;
 import Source.Gpu.Engines;
 import Source.Gpu.Gpu;
 import Source.Gpu.Macro;
+import Source.Gpu.Texture;
 import Source.Graphics.BlockLinear;
 
 // Types
@@ -40,12 +41,12 @@ enum Maxwell3DMethod : uint {
     RenderTargetControl = 0x487,
     LinkedTsc = 0x48D,
     WindowOrigin = 0x4EB,
-    TexHeaderPoolHigh = 0x557,
-    TexHeaderPoolLow = 0x558,
-    TexHeaderPoolLimit = 0x559,
-    TexSamplerPoolHigh = 0x55D,
-    TexSamplerPoolLow = 0x55E,
-    TexSamplerPoolLimit = 0x55F,
+    TexSamplerPoolHigh = 0x557,
+    TexSamplerPoolLow = 0x558,
+    TexSamplerPoolLimit = 0x559,
+    TexHeaderPoolHigh = 0x55D,
+    TexHeaderPoolLow = 0x55E,
+    TexHeaderPoolLimit = 0x55F,
     ProgramRegionHigh = 0x582,
     ProgramRegionLow = 0x583,
     DrawEnd = 0x585,
@@ -257,6 +258,33 @@ final class Maxwell3D : GpuEngine, MacroHost {
         target.BlockHeightLog2 = (Registers[base + 5] >> 4) & 0xF;
         target.PitchLinear = (Registers[base + 5] & (1 << 12)) != 0;
         return target;
+    }
+
+    // Textures
+    bool ReadTextureHandle(ShaderStage stage, uint offset, out TextureHandle handle) {
+        const ConstBufferBinding binding = ConstBuffer(ConstBufferStage(stage), Registers[Maxwell3DMethod.TexConstBufferIndex]);
+        if (!binding.Enabled || offset + 4 > binding.Size)
+            return false;
+        handle = TextureHandle(gpu.MemoryManager.Read!uint(binding.Address + offset));
+        return true;
+    }
+
+    uint SamplerIndex(TextureHandle handle) const {
+        return Registers[Maxwell3DMethod.LinkedTsc] != 0 ? handle.HeaderIndex : handle.SamplerIndex;
+    }
+
+    bool ReadTextureHeader(uint index, out TextureHeader header) {
+        if (index > Registers[Maxwell3DMethod.TexHeaderPoolLimit])
+            return false;
+        gpu.MemoryManager.Read(Address(Maxwell3DMethod.TexHeaderPoolHigh) + index * DescriptorSize, cast(ubyte[]) header.Words[]);
+        return true;
+    }
+
+    bool ReadSamplerHeader(uint index, out SamplerHeader header) {
+        if (index > Registers[Maxwell3DMethod.TexSamplerPoolLimit])
+            return false;
+        gpu.MemoryManager.Read(Address(Maxwell3DMethod.TexSamplerPoolHigh) + index * DescriptorSize, cast(ubyte[]) header.Words[]);
+        return true;
     }
 
     // Methods
