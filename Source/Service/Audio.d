@@ -11,11 +11,13 @@
 module Source.Service.Audio;
 
 // Std
-import core.time : dur;
+import core.time : Duration, MonoTime, dur;
 import std.algorithm : min;
 
 // Core
+import Source.Audio.AudioRenderer;
 import Source.Frontend.HostAudio;
+import Source.Memory.Guest;
 import Source.Kernel.Ipc;
 import Source.Kernel.Objects;
 import Source.Kernel.Result;
@@ -33,75 +35,24 @@ enum AudioRendererState : uint {
     Stopped = 1,
 }
 
-enum MemPoolState : uint {
-    Invalid = 0,
-    New = 1,
-    RequestDetach = 2,
-    Detached = 3,
-    RequestAttach = 4,
-    Attached = 5,
-    Released = 6,
-}
-
-enum size_t MemPoolInSize = 0x20;
-enum size_t VoiceInSize = 0x170;
-enum size_t EffectInSize = 0xC0;
-enum size_t SinkInSize = 0x140;
-enum size_t MemPoolOutSize = 0x10;
-enum size_t VoiceOutSize = 0x10;
-enum size_t EffectOutSize = 0x10;
-enum size_t SinkOutSize = 0x20;
-enum size_t PerformanceOutSize = 0x10;
-enum size_t BehaviorOutSize = 0xB0;
 enum size_t DeviceNameSize = 0x100;
-enum uint OutputChannels = 2;
+enum size_t MaxCatchUpFrames = 8;
+enum size_t MinQueuedFrames = 2;
+enum size_t MaxQueuedFrames = 8;
 
 immutable string[] AudioDeviceNames = ["AudioStereoJackOutput", "AudioBuiltInSpeakerOutput", "AudioTvOutput"];
 enum string ActiveAudioDeviceName = "AudioTvOutput";
 
-struct AudioRendererParameter {
-    uint SampleRate;
-    uint SampleCount;
-    uint MixBufferCount;
-    uint SubmixCount;
-    uint VoiceCount;
-    uint SinkCount;
-    uint EffectCount;
-    uint PerformanceFrameCount;
-    ubyte VoiceDropEnable;
-    ubyte[3] Padding;
-    uint SplitterCount;
-    uint SplitterDestinationCount;
-    uint ExternalContextSize;
-    uint Revision;
-}
-
-struct UpdateDataHeader {
-    uint Revision;
-    uint BehaviorSize;
-    uint MemPoolsSize;
-    uint VoicesSize;
-    uint VoiceResourcesSize;
-    uint EffectsSize;
-    uint MixesSize;
-    uint SinksSize;
-    uint PerformanceSize;
-    uint SplitterSize;
-    uint RenderInfoSize;
-    uint[4] Padding;
-    uint TotalSize;
-}
-
-static assert(UpdateDataHeader.sizeof == 0x40);
-
 // State
 final class AudioState {
     HostAudio Output;
+    GuestMemory Memory;
     Scheduler Threading;
 
-    this(HostAudio output, Scheduler threading) {
-        Output = output;
+    this(GuestMemory memory, Scheduler threading, HostAudio output) {
         Threading = threading;
+        Memory = memory;
+        Output = output;
     }
 }
 
@@ -129,14 +80,6 @@ private ulong WorkBufferSize(const ref AudioRendererParameter parameter) {
     size += cast(ulong) (parameter.PerformanceFrameCount + 1) * 0x1000;
     size += parameter.ExternalContextSize;
     return AlignUp(size, 0x1000);
-}
-
-private uint NextMemPoolState(uint state) {
-    switch (state) {
-        case MemPoolState.RequestAttach: return MemPoolState.Attached;
-        case MemPoolState.RequestDetach: return MemPoolState.Detached;
-        default: return state;
-    }
 }
 
 // Services
@@ -180,15 +123,20 @@ final class AudioRendererManagerService : IPCService {
 final class AudioRendererService : IPCService {
     private AudioState state;
     private AudioRendererParameter parameter;
+    private AudioRenderer renderer;
     private KEvent systemEvent;
     private bool started;
     private uint renderingTimeLimit = 100;
+    private Duration frameDuration;
+    private MonoTime lastRender;
 
     this(AudioState state, AudioRendererParameter parameter) {
         this.state = state;
         this.parameter = parameter;
+        renderer = new AudioRenderer(state.Memory, parameter);
+        frameDuration = dur!"usecs"(cast(long) parameter.SampleCount * 1_000_000 / parameter.SampleRate);
         systemEvent = new KEvent("AudioRendererSystem", true);
-        state.Threading.AddPeriodic(systemEvent, dur!"usecs"(cast(long) parameter.SampleCount * 1_000_000 / parameter.SampleRate));
+        state.Threading.AddPeriodic(systemEvent, frameDuration);
         Command(0, "GetSampleRate", (IpcContext c) => c.Push!uint(this.parameter.SampleRate));
         Command(1, "GetSampleCount", (IpcContext c) => c.Push!uint(this.parameter.SampleCount));
         Command(2, "GetMixBufferCount", (IpcContext c) => c.Push!uint(this.parameter.MixBufferCount));
@@ -209,6 +157,7 @@ final class AudioRendererService : IPCService {
 
     private void Start(IpcContext context) {
         started = true;
+        lastRender = MonoTime.currTime;
         state.Output.Open(parameter.SampleRate, OutputChannels);
     }
 
@@ -217,38 +166,38 @@ final class AudioRendererService : IPCService {
     }
 
     private void RequestUpdate(IpcContext context) {
-        const ubyte[] input = context.ReadInput(0);
-        if (input.length < UpdateDataHeader.sizeof) {
+        ubyte[] output;
+        if (!renderer.Update(context.ReadInput(0), output)) {
             context.Result(AudioResult.InvalidUpdateInfo);
             return;
         }
-        const UpdateDataHeader inHeader = ReadValue!UpdateDataHeader(input, 0);
-        const size_t memPoolCount = inHeader.MemPoolsSize / MemPoolInSize;
-        const size_t voiceCount = inHeader.VoicesSize / VoiceInSize;
-        const size_t effectCount = inHeader.EffectsSize / EffectInSize;
-        const size_t sinkCount = inHeader.SinksSize / SinkInSize;
+        context.WriteOutput(0, output[0 .. min(output.length, context.OutputSize(0))]);
+        if (started) {
+            Render();
+        }
+    }
 
-        // todo: actually mix voices into sdl
-        UpdateDataHeader outHeader;
-        outHeader.Revision = inHeader.Revision;
-        outHeader.MemPoolsSize = cast(uint) (memPoolCount * MemPoolOutSize);
-        outHeader.VoicesSize = cast(uint) (voiceCount * VoiceOutSize);
-        outHeader.EffectsSize = cast(uint) (effectCount * EffectOutSize);
-        outHeader.SinksSize = cast(uint) (sinkCount * SinkOutSize);
-        outHeader.PerformanceSize = cast(uint) PerformanceOutSize;
-        outHeader.BehaviorSize = cast(uint) BehaviorOutSize;
-        outHeader.TotalSize = cast(uint) (UpdateDataHeader.sizeof + outHeader.MemPoolsSize + outHeader.VoicesSize + outHeader.EffectsSize + outHeader.SinksSize + outHeader.PerformanceSize + outHeader.BehaviorSize);
-
-        ubyte[] output = new ubyte[outHeader.TotalSize];
-        *cast(UpdateDataHeader*) output.ptr = outHeader;
-
-        const size_t memPoolsIn = UpdateDataHeader.sizeof + inHeader.BehaviorSize;
-        foreach (i; 0 .. memPoolCount) {
-            const uint poolState = ReadValue!uint(input, memPoolsIn + i * MemPoolInSize + 0x10);
-            *cast(uint*) (output.ptr + UpdateDataHeader.sizeof + i * MemPoolOutSize) = NextMemPoolState(poolState);
+    private void Render() {
+        const MonoTime now = MonoTime.currTime;
+        size_t due = cast(size_t) ((now - lastRender) / frameDuration);
+        if (due > MaxCatchUpFrames) {
+            due = MaxCatchUpFrames;
+            lastRender = now;
+        } else {
+            lastRender += frameDuration * due;
         }
 
-        context.WriteOutput(0, output[0 .. min(output.length, context.OutputSize(0))]);
+        const size_t frameBytes = parameter.SampleCount * OutputChannels * short.sizeof;
+        const size_t queued = state.Output.QueuedBytes;
+        if (state.Output.IsOpen && queued < frameBytes * MinQueuedFrames) {
+            due++;
+        }
+        foreach (_; 0 .. due) {
+            const short[] samples = renderer.Render();
+            if (state.Output.QueuedBytes < frameBytes * MaxQueuedFrames) {
+                state.Output.Queue(samples);
+            }
+        }
     }
 }
 

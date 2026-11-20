@@ -83,6 +83,12 @@ public T ReadValue(T)(const(ubyte)[] data, size_t offset) {
     return value;
 }
 
+public void Store(T)(ubyte[] data, size_t offset, T value) {
+    if (offset + T.sizeof <= data.length) {
+        *cast(T*) (data.ptr + offset) = value;
+    }
+}
+
 // Utils
 string GetServiceNameFromRaw(ulong raw) pure @safe {
     char[] svcName;

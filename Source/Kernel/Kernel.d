@@ -133,7 +133,10 @@ final class HorizonKernel {
     Scheduler Threading;
     ServiceRegistry Services;
     AddressSpace Space;
-    // TODO: make states service dependents on register
+    // Host
+    HostDisplay DisplayOnHost;
+    HostAudio AudioOnHost;
+    // States
     AppletState Applet;
     HidState Hid;
     Gpu Graphics;
@@ -142,7 +145,6 @@ final class HorizonKernel {
     TimeState Time;
     SwitchStorage Storage;
     AccountState Accounts;
-    HostDisplay Display;
     AudioState Audio;
 
     ulong ProgramId = 0x0100_0000_0000_100D;
@@ -167,18 +169,21 @@ final class HorizonKernel {
         mainThread.Handle = mainThreadHandle;
         Threading = new Scheduler(environment, Memory, Handles, mainThread);
 
+        DisplayOnHost = new HostDisplay();
+        AudioOnHost = new HostAudio();
+        Graphics = new Gpu(Memory);
+        Graphics.ThreeD.Renderer = new HostRenderer(DisplayOnHost, Graphics.MemoryManager);
+
         Applet = new AppletState();
         Hid = new HidState();
-        Display = new HostDisplay();
-        Display.OnInputCallback = &Hid.WriteNpadInput;
-        Graphics = new Gpu(Memory);
-        Graphics.ThreeD.Renderer = new HostRenderer(Display, Graphics.MemoryManager);
+        DisplayOnHost.OnInputCallback = &Hid.WriteNpadInput;
+        Audio = new AudioState(Memory, Threading, AudioOnHost);
         Nv = new NvState(Graphics);
-        Vi = new ViState(Memory, Nv, Display);
+        Vi = new ViState(Memory, Nv, DisplayOnHost);
         Time = new TimeState();
         Storage = new SwitchStorage();
         Accounts = new AccountState();
-        Audio = new AudioState(new HostAudio(), Threading);
+        
         Applet.Storage = Storage;
         Applet.ProgramId = ProgramId;
         Applet.PreselectedUser = Accounts.Users[0].Uid;
@@ -231,7 +236,7 @@ final class HorizonKernel {
 
     void Shutdown() {
         Audio.Output.Close();
-        Display.Close();
+        DisplayOnHost.Close();
     }
 
     bool HandleSvc(uint id) {

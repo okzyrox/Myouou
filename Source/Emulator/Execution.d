@@ -115,11 +115,11 @@ int RunFile(string path) {
             kernel.Shutdown();
             return 0;
         }
-        if (kernel.Display.IsOpen) {
+        if (kernel.DisplayOnHost.IsOpen) {
             if (svcCount % 0x1000 == 0) {
-                kernel.Display.UpdateEvents();
+                kernel.DisplayOnHost.UpdateEvents();
             }
-            if (kernel.Display.ShouldQuit) {
+            if (kernel.DisplayOnHost.ShouldQuit) {
                 writefln("Window manually closed.");
                 kernel.Shutdown();
                 return 0;
