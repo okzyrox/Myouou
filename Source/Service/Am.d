@@ -127,9 +127,11 @@ final class ApplicationProxy : IPCService {
 // ICommonStateGetter
 final class CommonStateGetter : IPCService {
     private AppletState state;
+    private KEvent defaultResolutionChangeEvent;
 
     this(AppletState state) {
         this.state = state;
+        defaultResolutionChangeEvent = new KEvent("DefaultDisplayResolutionChange");
         Command(0, "GetEventHandle", &GetEventHandle);
         Command(1, "ReceiveMessage", &ReceiveMessage);
         Command(5, "GetOperationMode", (IpcContext c) => c.Push!ubyte(state.OperationMode));
@@ -137,12 +139,19 @@ final class CommonStateGetter : IPCService {
         Command(8, "GetBootMode", (IpcContext c) => c.Push!ubyte(0));
         Command(9, "GetCurrentFocusState", (IpcContext c) => c.Push!ubyte(state.FocusState));
         Stub(50, "IsVrModeEnabled");
-        Stub(60, "GetDefaultDisplayResolution");
+        Command(60, "GetDefaultDisplayResolution", &GetDefaultDisplayResolution);
+        Command(61, "GetDefaultDisplayResolutionChangeEvent", (IpcContext c) => c.PushCopyHandle(defaultResolutionChangeEvent));
         Stub(66, "SetCpuBoostMode");
     }
 
     override string Name() const {
         return "am::ICommonStateGetter";
+    }
+
+    private void GetDefaultDisplayResolution(IpcContext context) {
+        const bool docked = state.OperationMode == 1;
+        context.Push!int(docked ? 1920 : 1280);
+        context.Push!int(docked ? 1080 : 720);
     }
 
     private void GetEventHandle(IpcContext context) {
