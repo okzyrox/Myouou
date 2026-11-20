@@ -234,6 +234,7 @@ struct Instruction {
 
     uint Imm32() const { return cast(uint) Bits(20, 32); }
     float Imm32Float() const { return BitsToFloat(Imm32); }
+    uint TextureOffset() const { return cast(uint) Bits(36, 13) * 4; }
 
     int BranchOffset() const {
         return cast(int) cast(uint) Bits(20, 24) << 8 >> 8;
@@ -260,4 +261,26 @@ string[] DisassembleProgram(const(ulong)[] program, size_t headerWords) {
         lines ~= Instruction.Decode(program[i], index * 8).Disassemble();
     }
     return lines;
+}
+
+bool IsTextureOp(Opcode op) {
+    return op == Opcode.Tex || op == Opcode.Texs || op == Opcode.Tld || op == Opcode.Tlds;
+}
+
+uint[] TextureOffsets(const(ulong)[] program, size_t headerWords) {
+    uint[] offsets;
+    foreach (i; headerWords .. program.length) {
+        const size_t index = i - headerWords;
+        if (IsScheduleWord(index))
+            continue;
+        const Instruction instruction = Instruction.Decode(program[i], index * 8);
+        if (!IsTextureOp(instruction.Op))
+            continue;
+        bool seen = false;
+        foreach (offset; offsets)
+            seen |= offset == instruction.TextureOffset;
+        if (!seen)
+            offsets ~= instruction.TextureOffset;
+    }
+    return offsets;
 }

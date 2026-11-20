@@ -24,6 +24,7 @@ import Source.Gpu.Maxwell3D;
 import Source.Gpu.MemoryManager;
 import Source.Gpu.Shader.Instructions;
 import Source.Gpu.Shader.Translator;
+import Source.Gpu.Texture;
 import Source.Util.Logger;
 
 // Types
@@ -108,6 +109,7 @@ final class HostRenderer : GpuRenderer {
     private CachedShader[ulong] shaders;
     private SDL_GPUGraphicsPipeline*[string] pipelines;
     private bool[string] failures;
+    private bool[string] describedTextures; // temp
     private Logger log;
 
     this(HostDisplay display, GpuMemoryManager memory) {
@@ -577,6 +579,28 @@ final class HostRenderer : GpuRenderer {
         return SDL_GPUViewport(transform[3] - abs(transform[0]), top, 2 * abs(transform[0]), 2 * abs(transform[1]), 0, 1);
     }
 
+    // Textures
+    private void DebugTextures(Maxwell3D engine, ShaderStage stage) {
+        foreach (offset; TextureOffsets(ReadProgram(engine.ShaderAddress(stage)), ShaderHeaderWords)) {
+            TextureHandle handle;
+            if (!engine.ReadTextureHandle(stage, offset, handle)) {
+                FailOnce(format("handle%d:%X", stage, offset), "Stage (%d) texture handle at offset 0x%X was not bound!", stage, offset);
+                continue;
+            }
+            TextureHeader header;
+            SamplerHeader sampler;
+            const bool hasHeader = engine.ReadTextureHeader(handle.HeaderIndex, header);
+            const bool hasSampler = engine.ReadSamplerHeader(engine.SamplerIndex(handle), sampler);
+            const string key = format("%d:%X:%s:%s", stage, handle.Raw, header.Words, sampler.Words);
+            if (key in describedTextures)
+                continue;
+            describedTextures[key] = true;
+            log.Info("Stage %d texture at 0x%X, handle 0x%08X (TIC %d, TSC %d)", stage, offset, handle.Raw, handle.HeaderIndex, engine.SamplerIndex(handle));
+            log.Info("TIC: %s", hasHeader ? header.DebugDesc() : "outside header");
+            log.Info("TSC: %s", hasSampler ? sampler.DebugDesc() : "outside sampler");
+        }
+    }
+
     // Draws
     bool Draw(Maxwell3D engine, uint topology, uint first, uint count, bool indexed) {
         if (count == 0)
@@ -590,6 +614,9 @@ final class HostRenderer : GpuRenderer {
             FailOnce(format("topology%d", topology), "Topology %d is not supported", topology);
             return false;
         }
+
+        DebugTextures(engine, ShaderStage.VertexB);
+        DebugTextures(engine, ShaderStage.Fragment);
 
         CachedShader* vertex = Shader(engine, ShaderStage.VertexB, ShaderStageKind.Vertex);
         CachedShader* fragment = Shader(engine, ShaderStage.Fragment, ShaderStageKind.Fragment);
