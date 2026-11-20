@@ -10,11 +10,14 @@
 
 module Source.Loader.NROLoader;
 
+// Std
+import std.stdio;
+
 // Core
-import Source.Emulator.GuestEnv;
 import Source.Format.NRO;
+import Source.Kernel.Kernel;
+import Source.Loader.Executable;
 import Source.Memory.Guest;
-import Source.Wrapper.DynarmicJit;
 
 // Types
 enum HomebrewEntryType : uint {
@@ -43,7 +46,7 @@ struct Layout {
     ulong TlsBase = 0x1F00_0000;
     ulong HeapBase = 0x2000_0000;
     size_t HeapSize = 0x1000_0000;
-    ulong MainThreadHandle = 0xF001;
+    ulong MainThreadHandle = DefaultMainThreadHandle;
     string Argv = "";
 }
 
@@ -116,17 +119,50 @@ NROData LoadNROToMemory(GuestMemory memory, NROFile nro, Layout layout = Layout.
     return nroData;
 }
 
-void LoadEntry(GuestEnvironment environment, DynarmicJit jit, in NROData loaded) {
-    environment.TpidrroEl0 = loaded.TlsAddress;
-    environment.TpidrEl0 = 0;
-    environment.ReturnAddress = loaded.ReturnAddress;
-    environment.Exited = false;
+final class NROExecutable : Executable {
+    private string path;
+    private NROFile nro;
 
-    ulong[31] registers;
-    registers[0] = loaded.ContextAddress;
-    registers[1] = ulong.max;
-    registers[30] = loaded.ReturnAddress;
-    jit.Registers(registers);
-    jit.Sp = loaded.StackTop;
-    jit.Pc = loaded.EntryPoint;
+    this(string path) {
+        this.path = path;
+        nro = NROFile.Load(path);
+    }
+
+    static bool Matches(const(ubyte)[] header) {
+        return header.length >= NROHeader.sizeof && (cast(const(NROHeader)*) header.ptr).Magic == NROMagic;
+    }
+
+    static Executable Open(string path) {
+        return new NROExecutable(path);
+    }
+
+    string FormatName() const {
+        return "NRO";
+    }
+
+    void Describe() {
+        const NROHeader header = nro.Header;
+        writefln("NRO Version %d", header.Version);
+        foreach (kind; [NROSegmentKind.Text, NROSegmentKind.Ro, NROSegmentKind.Data]) {
+            const NROSegment segment = header.Segments[kind];
+            writefln("Section: %-5s 0x%06X size 0x%06X", kind, segment.FileOffset, segment.Size);
+        }
+        if (nro.HasAssets) {
+            const NacpInfo nacp = nro.Nacp;
+            writefln("%s by %s, app version: %s", nacp.Title, nacp.Author, nacp.DisplayVersion);
+            writefln("Icon 0x%X, NACP 0x%X, RomFS 0x%X", nro.Icon.length, nro.NacpData.length, nro.RomFs.length);
+        }
+    }
+
+    ProgramEntry Load(GuestMemory memory, HorizonKernel kernel) {
+        Layout layout;
+        layout.Argv = "\"" ~ kernel.Storage.ExposeToSDMC(path) ~ "\""; // a bit messy
+        const NROData loaded = LoadNROToMemory(memory, nro, layout);
+        writefln("Loaded 0x%X, 0x%X. top 0x%X", loaded.ImgBase, loaded.EntryPoint, loaded.StackTop);
+
+        // abi: 
+            // X0 = loader ctx
+            // X1 = -1 for nro
+        return ProgramEntry(loaded.EntryPoint, loaded.StackTop, loaded.TlsAddress, loaded.ReturnAddress, [loaded.ContextAddress, ulong.max]);
+    }
 }

@@ -5,72 +5,84 @@
  * and redistribution are subject to the terms and restrictions in the LICENSE,
  * which can be obtained in the Project Root.
  *
- * Loading and executing an NRO until it needs the kernel.
+ * Loading and running an executable
 */
 
-module Source.Emulator.NROExec;
+module Source.Emulator.Execution;
 
 // Std
 import std.stdio;
 
 // Core
 import Source.Emulator.GuestEnv;
-import Source.Format.NRO;
 import Source.Kernel.Kernel;
 import Source.Kernel.Svc;
+import Source.Loader.Executable;
 import Source.Loader.NROLoader;
 import Source.Memory.Guest;
 import Source.Wrapper.Dynarmic;
 import Source.Wrapper.DynarmicJit;
 
-// Utils
-void DebugNROFile(NROFile nro) {
-    const NROHeader header = nro.Header;
-    writefln("NRO Version %d", header.Version);
-    foreach (kind; [NROSegmentKind.Text, NROSegmentKind.Ro, NROSegmentKind.Data]) {
-        const NROSegment segment = header.Segments[kind];
-        writefln("Section: %-5s 0x%06X size 0x%06X", kind, segment.FileOffset, segment.Size);
-    }
-    if (nro.HasAssets) {
-        const NacpInfo nacp = nro.Nacp;
-        writefln("%s by %s, app version: %s", nacp.Title, nacp.Author, nacp.DisplayVersion);
-        writefln("NACP 0x%X, RomFS 0x%X", nro.Icon.length, nro.NacpData.length, nro.RomFs.length);
-    }
-}
+// Types
+enum size_t HeaderProbeSize = 0x1000; // should be enough for most formats?
+immutable ExecutableFormat[] ExecutableFormats = [
+    ExecutableFormat("NRO", &NROExecutable.Matches, &NROExecutable.Open),
+];
 
+// Utils
 void DebugRegs(DynarmicJit jit) {
     const ulong[31] regs = jit.Registers;
     foreach (i; 0 .. 31) {
         writef("  X%-2d 0x%016X", i, regs[i]);
-        if (i % 4 == 2)
+        if (i % 4 == 2) {
             writeln();
+        }
     }
     writefln("\nSP  0x%016X\nPC  0x%016X", jit.Sp, jit.Pc);
 }
 
+Executable OpenExecutable(string path) {
+    File file = File(path, "rb");
+    ubyte[] header = new ubyte[HeaderProbeSize];
+    header = file.rawRead(header);
+    file.close();
+
+    foreach (format; ExecutableFormats) {
+        // headermatched rather than extension matched just in case
+        if (format.Matches(header)) {
+            return format.Open(path);
+        }
+    }
+    throw new ExecutableError("Unrecognised executable format: " ~ path);
+}
+
 // Main
 int RunFile(string path) {
-    NROFile nro = NROFile.Load(path);
-    DebugNROFile(nro);
+    Executable executable;
+    try {
+        executable = OpenExecutable(path);
+    } catch (ExecutableError error) {
+        writefln("%s", error.msg);
+        return 1;
+    }
+    writefln("File Format: %s", executable.FormatName);
+    executable.Describe();
 
     GuestMemory memory = new GuestMemory();
     GuestEnvironment environment = new GuestEnvironment(memory);
     DynarmicJit jit = environment.CreateJit();
 
-    Layout layout;
-    HorizonKernel kernel = new HorizonKernel(environment, cast(uint)layout.MainThreadHandle);
-    layout.Argv = "\"" ~ kernel.Storage.ExposeToSDMC(path) ~ "\""; // a bit messy
-    NROData loaded = LoadNROToMemory(memory, nro, layout);
-    LoadEntry(environment, jit, loaded);
-
-    writefln("Loaded 0x%X, 0x%X. top 0x%X", loaded.ImgBase, loaded.EntryPoint, loaded.StackTop);
+    HorizonKernel kernel = new HorizonKernel(environment, DefaultMainThreadHandle);
+    const ProgramEntry entry = executable.Load(memory, kernel);
+    StartProgram(environment, jit, entry);
 
     HaltReason haltResult;
     size_t svcCount = 0;
     while (true) {
         haltResult = jit.Run();
-        if (!haltResult.Has(SvcHalt))
+        if (!haltResult.Has(SvcHalt)) {
             break;
+        }
 
         jit.ClearHalt(SvcHalt);
         svcCount++;
@@ -82,8 +94,9 @@ int RunFile(string path) {
             return 0;
         }
         if (kernel.Display.IsOpen) {
-            if (svcCount % 0x1000 == 0)
+            if (svcCount % 0x1000 == 0) {
                 kernel.Display.UpdateEvents();
+            }
             if (kernel.Display.ShouldQuit) {
                 writefln("Window manually closed.");
                 kernel.Display.Close();

@@ -18,7 +18,7 @@ import bindbc.sdl;
 import Source.Util.Logger;
 import Source.Wrapper.Dynarmic;
 import Source.Wrapper.DynarmicJit;
-import Source.Emulator.NROExec;
+import Source.Emulator.Execution;
 
 int main(string[] args) {
     LogLevel logLevel = LogLevel.Info;
