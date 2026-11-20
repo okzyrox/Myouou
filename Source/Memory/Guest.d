@@ -13,8 +13,15 @@ module Source.Memory.Guest;
 // Std
 import std.format : format;
 
+version (Windows) {
+    import core.sys.windows.winbase : VirtualAlloc, VirtualFree;
+    import core.sys.windows.winnt : MEM_COMMIT, MEM_DECOMMIT, MEM_RESERVE, PAGE_READWRITE;
+} else version (Posix) {
+    import core.sys.posix.sys.mman : MAP_ANON, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE, mmap, munmap;
+}
 
 enum size_t GuestPageSize = 0x1000;
+enum size_t HostPagesLimit = 0x10_0000;
 
 // Types
 enum MemoryPermission : ubyte {
@@ -84,6 +91,31 @@ class GuestMemoryFault : GuestMemoryError {
     }
 }
 
+// Host Pages
+private ubyte[] AllocateHostPages(size_t size) {
+    void* pointer;
+    version (Windows) {
+        pointer = VirtualAlloc(null, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    } else version (Posix) {
+        pointer = mmap(null, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (pointer == MAP_FAILED) {
+            pointer = null;
+        }
+    }
+    if (pointer is null) {
+        throw new GuestMemoryError(format("Host couldnt allocate 0x%X bytes of guest memory!", size));
+    }
+    return (cast(ubyte*) pointer)[0 .. size];
+}
+
+private void ReleaseHostPages(ubyte[] bytes) {
+    version (Windows) {
+        VirtualFree(bytes.ptr, bytes.length, MEM_DECOMMIT);
+    } else version (Posix) {
+        munmap(bytes.ptr, bytes.length);
+    }
+}
+
 // Classes
 final class MemoryRegion {
     MemoryPermission Permission;
@@ -92,9 +124,13 @@ final class MemoryRegion {
     ulong Base;
     string Name;
     ubyte[] Bytes;
+    bool HostPages;
 
     this(ulong base, size_t size, MemoryPermission permission, string name, MemoryType memType = MemoryType.Normal) {
-        this(base, new ubyte[size], permission, name, memType);
+        const bool hostPages = size >= HostPagesLimit;
+        // Page allocation helps with using "less" ram (by reserving it ahead of time with commited stuff)
+        this(base, hostPages ? AllocateHostPages(size) : new ubyte[size], permission, name, memType);
+        HostPages = hostPages;
     }
 
     this(ulong base, ubyte[] bytes, MemoryPermission permission, string name, MemoryType memType = MemoryType.Normal) {
@@ -170,6 +206,11 @@ final class GuestMemory {
             if (region.Base < base || region.End() > base + size)
                 kept ~= region;
         regions = kept;
+        foreach (region; found) {
+            if (region.HostPages) {
+                ReleaseHostPages(region.Bytes);
+            }
+        }
         previousRegion = null;
         return true;
     }
@@ -246,6 +287,7 @@ final class GuestMemory {
             const size_t offset = cast(size_t) (address - region.Base);
             MemoryRegion upper = new MemoryRegion(address, region.Bytes[offset .. $], region.Permission, region.Name, region.MemType);
             upper.Attribute = region.Attribute;
+            upper.HostPages = region.HostPages;
             region.Bytes = region.Bytes[0 .. offset];
             regions = regions[0 .. i + 1] ~ upper ~ regions[i + 1 .. $];
             previousRegion = null;

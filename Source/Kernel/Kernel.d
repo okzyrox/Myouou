@@ -108,7 +108,7 @@ struct AddressSpace {
     ulong AliasSize = 0x10_0000_0000;
     ulong StackBase = 0x12_0000_0000;
     ulong StackSize = 0x1_0000_0000;
-    ulong TotalMemory = 0x2000_0000;
+    ulong TotalMemory = 0xCD50_0000; // about ~3GB
 
     ulong End() const pure nothrow @nogc @safe {
         return AslrBase + AslrSize;
