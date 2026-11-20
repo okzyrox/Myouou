@@ -56,6 +56,15 @@ abstract class IPCService {
         (*handler)(context);
         Log.Trace("%s -> %s", commandNames[id], FormatResult(context.Response.Result));
     }
+
+    // Utils
+    void True(IpcContext context) {
+        context.Push!ubyte(1);
+    }
+
+    void False(IpcContext context) {
+        context.Push!ubyte(0);
+    }
 }
 
 // Utils
