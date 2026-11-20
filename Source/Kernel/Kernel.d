@@ -33,6 +33,7 @@ import Source.Wrapper.DynarmicJit;
 import Source.Service.Acc;
 import Source.Service.Am;
 import Source.Service.Apm;
+import Source.Service.Fs;
 import Source.Gpu.Gpu;
 import Source.Gpu.Renderer;
 import Source.Service.Hid;
@@ -197,6 +198,8 @@ final class HorizonKernel {
         foreach (name; ["time:u", "time:a", "time:s"]) {
             Services.Register(name, TimeFactory(name));
         }
+
+        Services.Register("fsp-srv", () => cast(IPCService) new FileSystemProxyService(Storage, ProgramId));
     }
 
     // todo: refactor factories to each service individually?
