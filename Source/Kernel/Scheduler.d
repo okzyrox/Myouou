@@ -28,11 +28,18 @@ enum uint MutexWaitersBit = 0x4000_0000;
 enum Duration TimeSlice = dur!"msecs"(2);
 enum Duration MaxIdleSleep = dur!"msecs"(10);
 
+struct Poller {
+    void delegate() Callback;
+    Duration Interval;
+    MonoTime Next;
+}
+
 // Class
 final class Scheduler {
     KThread Current;
     KThread[] Threads;
     KEvent[] PeriodicEvents;
+    Poller[] Pollers;
 
     private GuestEnvironment environment;
     private DynarmicJit jit;
@@ -63,6 +70,10 @@ final class Scheduler {
         event.Period = period;
         event.NextSignal = MonoTime.currTime + period;
         PeriodicEvents ~= event;
+    }
+
+    void AddPoller(void delegate() callback, Duration interval) {
+        Pollers ~= Poller(callback, interval, MonoTime.currTime + interval);
     }
 
     // Threads
@@ -159,6 +170,12 @@ final class Scheduler {
         const MonoTime now = MonoTime.currTime;
         foreach (event; PeriodicEvents) {
             event.Tick(now);
+        }
+        foreach (ref poller; Pollers) {
+            if (now >= poller.Next) {
+                poller.Callback();
+                poller.Next = now + poller.Interval;
+            }
         }
         foreach (thread; Threads) {
             if (thread.State != ThreadState.Waiting) {
@@ -268,6 +285,12 @@ final class Scheduler {
         foreach (event; PeriodicEvents) {
             if (!anyDeadline || event.NextSignal < nearest) {
                 nearest = event.NextSignal;
+                anyDeadline = true;
+            }
+        }
+        foreach (poller; Pollers) {
+            if (!anyDeadline || poller.Next < nearest) {
+                nearest = poller.Next;
                 anyDeadline = true;
             }
         }
