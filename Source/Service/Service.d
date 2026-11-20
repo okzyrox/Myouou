@@ -70,6 +70,19 @@ abstract class IPCService {
     }
 }
 
+// Shared Utils
+public ulong AlignUp(ulong value, ulong alignment) {
+    return (value + alignment - 1) & ~(alignment - 1);
+}
+
+public T ReadValue(T)(const(ubyte)[] data, size_t offset) {
+    T value;
+    if (offset + T.sizeof <= data.length) {
+        value = *cast(const(T)*) (data.ptr + offset);
+    }
+    return value;
+}
+
 // Utils
 string GetServiceNameFromRaw(ulong raw) pure @safe {
     char[] svcName;

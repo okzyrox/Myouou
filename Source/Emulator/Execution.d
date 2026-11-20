@@ -112,7 +112,7 @@ int RunFile(string path) {
         if (!wasStubbed) {
             writefln("Stopped at %s (0x%X).", GetSvcName(environment.PreviousSvc), jit.Pc - 4);
             DebugRegs(jit);
-            kernel.Display.Close();
+            kernel.Shutdown();
             return 0;
         }
         if (kernel.Display.IsOpen) {
@@ -121,7 +121,7 @@ int RunFile(string path) {
             }
             if (kernel.Display.ShouldQuit) {
                 writefln("Window manually closed.");
-                kernel.Display.Close();
+                kernel.Shutdown();
                 return 0;
             }
         }
@@ -130,7 +130,7 @@ int RunFile(string path) {
             return 1;
         }
     }
-    kernel.Display.Close();
+    kernel.Shutdown();
 
     if (haltResult.Has(ExitHalt)) {
         writefln("Guest returned to loader where X0 = 0x%X", jit.Register(0));

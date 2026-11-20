@@ -11,7 +11,7 @@
 module Source.Kernel.Objects;
 
 // Std
-import core.time : MonoTime;
+import core.time : Duration, MonoTime;
 import std.format : format;
 
 // Core
@@ -97,6 +97,8 @@ final class KThread : KObject {
 final class KEvent : KObject {
     string Name;
     bool Signaled;
+    Duration Period;
+    MonoTime NextSignal;
 
     this(string name, bool signaled = false) {
         Name = name;
@@ -109,6 +111,17 @@ final class KEvent : KObject {
 
     void Clear() {
         Signaled = false;
+    }
+
+    void Tick(MonoTime now) {
+        if (Period <= Duration.zero || now < NextSignal) {
+            return;
+        }
+        Signaled = true;
+        NextSignal += Period;
+        if (NextSignal <= now) {
+            NextSignal = now + Period;
+        }
     }
 
     override bool IsSignaled() const {

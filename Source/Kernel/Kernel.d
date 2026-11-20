@@ -33,6 +33,7 @@ import Source.Wrapper.DynarmicJit;
 // Services
 import Source.Service.Acc;
 import Source.Service.Am;
+import Source.Service.Audio;
 import Source.Service.Apm;
 import Source.Service.Fs;
 import Source.Gpu.Gpu;
@@ -49,6 +50,7 @@ import Source.Service.Vi;
 import Source.FileSystem.Storage;
 
 // Frontend
+import Source.Frontend.HostAudio;
 import Source.Frontend.HostDisplay;
 
 // Types
@@ -141,6 +143,7 @@ final class HorizonKernel {
     SwitchStorage Storage;
     AccountState Accounts;
     HostDisplay Display;
+    AudioState Audio;
 
     ulong ProgramId = 0x0100_0000_0000_100D;
     Logger SvcLog;
@@ -175,6 +178,7 @@ final class HorizonKernel {
         Time = new TimeState();
         Storage = new SwitchStorage();
         Accounts = new AccountState();
+        Audio = new AudioState(new HostAudio(), Threading);
         Applet.Storage = Storage;
         Applet.ProgramId = ProgramId;
         Applet.PreselectedUser = Accounts.Users[0].Uid;
@@ -200,6 +204,7 @@ final class HorizonKernel {
             Services.Register(name, TimeFactory(name));
         }
 
+        Services.Register("audren:u", () => cast(IPCService) new AudioRendererManagerService(Audio));
         Services.Register("fsp-srv", () => cast(IPCService) new FileSystemProxyService(Storage, ProgramId));
     }
 
@@ -222,6 +227,11 @@ final class HorizonKernel {
 
     private ServiceFactory TimeFactory(string name) {
         return () => cast(IPCService) new TimeStaticService(name, Time);
+    }
+
+    void Shutdown() {
+        Audio.Output.Close();
+        Display.Close();
     }
 
     bool HandleSvc(uint id) {
