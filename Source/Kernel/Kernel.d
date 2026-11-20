@@ -38,6 +38,7 @@ import Source.Service.Nvdrv;
 import Source.Service.Service;
 import Source.Service.Set;
 import Source.Service.Sm;
+import Source.Service.Time;
 import Source.Service.Vi;
 
 // Frontend
@@ -128,6 +129,7 @@ final class HorizonKernel {
     Gpu Graphics;
     NvState Nv;
     ViState Vi;
+    TimeState Time;
     HostDisplay Display;
 
     ulong ProgramId = 0x0100_0000_0000_100D;
@@ -158,6 +160,7 @@ final class HorizonKernel {
         Graphics.ThreeD.Renderer = new HostRenderer(Display, Graphics.MemoryManager);
         Nv = new NvState(Graphics);
         Vi = new ViState(Memory, Nv, Display);
+        Time = new TimeState();
         Services = new ServiceRegistry();
         RegisterServices();
     }
@@ -173,6 +176,9 @@ final class HorizonKernel {
         Services.Register("vi:u", ViFactory("vi:u", 0));
         Services.Register("vi:s", ViFactory("vi:s", 1));
         Services.Register("vi:m", ViFactory("vi:m", 2));
+        foreach (name; ["time:u", "time:a", "time:s"]) {
+            Services.Register(name, TimeFactory(name));
+        }
     }
 
     // todo: refactor factories to each service individually?
@@ -186,6 +192,10 @@ final class HorizonKernel {
 
     private ServiceFactory ViFactory(string name, uint commandId) {
         return () => cast(IPCService) new ViRootService(name, commandId, Vi);
+    }
+
+    private ServiceFactory TimeFactory(string name) {
+        return () => cast(IPCService) new TimeStaticService(name, Time);
     }
 
     bool HandleSvc(uint id) {
