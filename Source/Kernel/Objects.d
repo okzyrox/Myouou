@@ -11,6 +11,7 @@
 module Source.Kernel.Objects;
 
 // Std
+import core.time : MonoTime;
 import std.format : format;
 
 // Core
@@ -38,14 +39,54 @@ final class KProcess : KObject {
     }
 }
 
+enum ThreadState {
+    Created,
+    Runnable,
+    Waiting,
+    Terminated,
+}
+
+enum ThreadWait {
+    None,
+    Sleep,
+    Objects,
+    Mutex,
+    CondVar,
+}
+
 final class KThread : KObject {
     ulong Id;
+    uint Handle;
     int Priority = 0x2C;
     int IdealCore = 0;
     ulong AffinityMask = 1;
+    ThreadState State = ThreadState.Created;
+
+    ulong[31] Registers;
+    ulong Sp;
+    ulong Pc;
+    uint Pstate;
+    uint Fpcr;
+    uint Fpsr;
+    ulong[2][32] Vectors;
+    ulong TlsAddress;
+    ulong TpidrEl0;
+
+    ThreadWait Wait;
+    KObject[] WaitObjects;
+    ulong WaitAddress;
+    ulong MutexAddress;
+    uint Tag;
+    bool HasDeadline;
+    MonoTime Deadline;
+    bool CancelPending;
 
     this(ulong id) {
         Id = id;
+    }
+
+    override bool IsSignaled() const {
+        return State == ThreadState.Terminated;
     }
 
     override string Describe() const {
