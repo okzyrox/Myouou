@@ -29,6 +29,8 @@ enum SpvOp : ushort {
     TypeInt = 21,
     TypeFloat = 22,
     TypeVector = 23,
+    TypeImage = 25,
+    TypeSampledImage = 27,
     TypeArray = 28,
     TypeRuntimeArray = 29,
     TypeStruct = 30,
@@ -48,6 +50,8 @@ enum SpvOp : ushort {
     MemberDecorate = 72,
     CompositeConstruct = 80,
     CompositeExtract = 81,
+    ImageSampleImplicitLod = 87,
+    ImageSampleExplicitLod = 88,
     ConvertFToU = 109,
     ConvertFToS = 110,
     ConvertSToF = 111,
@@ -148,6 +152,9 @@ enum SpvExecutionModel : uint {
 enum SpvExecutionMode : uint {
     OriginUpperLeft = 7,
 }
+
+enum uint SpvDim2D = 1;
+enum uint SpvImageOperandsLod = 0x2;
 
 enum uint SpvMagic = 0x0723_0203;
 enum uint SpvVersion10 = 0x0001_0000;
@@ -261,6 +268,14 @@ final class SpirvBuilder {
 
     uint TypeRuntimeArray(uint element) {
         return Type(format("rta%d", element), SpvOp.TypeRuntimeArray, [element]);
+    }
+
+    uint TypeImage2D() {
+        return Type("image2d", SpvOp.TypeImage, [Float, SpvDim2D, 0, 0, 0, 1, 0]);
+    }
+
+    uint TypeSampledImage(uint image) {
+        return Type(format("sampled%d", image), SpvOp.TypeSampledImage, [image]);
     }
 
     uint TypeStructUnique(const(uint)[] members) {

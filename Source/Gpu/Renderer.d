@@ -301,6 +301,7 @@ final class HostRenderer : GpuRenderer {
         info.format = SDL_GPU_SHADERFORMAT_SPIRV;
         info.stage = kind == ShaderStageKind.Vertex ? SDL_GPU_SHADERSTAGE_VERTEX : SDL_GPU_SHADERSTAGE_FRAGMENT;
         info.numStorageBuffers = cast(uint) cached.Translation.ConstBuffers.length;
+        info.numSamplers = cast(uint) cached.Translation.Textures.length;
         info.numUniformBuffers = kind == ShaderStageKind.Vertex ? 1 : 0;
         cached.Shader = SDL_CreateGPUShader(Device, &info);
         if (cached.Shader is null)
@@ -604,22 +605,24 @@ final class HostRenderer : GpuRenderer {
         }
     }
 
-    // todo: bind to shaders
-    private void PrepareTextures(Maxwell3D engine, ShaderStage stage) {
-        foreach (offset; TextureOffsets(ReadProgram(engine.ShaderAddress(stage)), ShaderHeaderWords)) {
+    private bool TextureBindings(Maxwell3D engine, ShaderStage stage, const(uint)[] offsets, out SDL_GPUTextureSamplerBinding[] bindings) {
+        // Bindings follow each texture's cbuf offset in order
+        foreach (offset; offsets) { 
             TextureHandle handle;
-            if (!engine.ReadTextureHandle(stage, offset, handle)) {
-                continue;
-            }
             TextureHeader header;
-            if (engine.ReadTextureHeader(handle.HeaderIndex, header)) {
-                textureCache.Texture(header);
+            SamplerHeader samplerHeader;
+            if (!engine.ReadTextureHandle(stage, offset, handle) || !engine.ReadTextureHeader(handle.HeaderIndex, header) || !engine.ReadSamplerHeader(engine.SamplerIndex(handle), samplerHeader)) {
+                FailOnce(format("binding%d:%X", stage, offset), "Stage %d texture at cbuf offset 0x%X has no valid descriptors!", stage, offset);
+                return false;
             }
-            SamplerHeader sampler;
-            if (engine.ReadSamplerHeader(engine.SamplerIndex(handle), sampler)) {
-                textureCache.Sampler(sampler);
+            CachedTexture* texture = textureCache.Texture(header);
+            SDL_GPUSampler* sampler = textureCache.Sampler(samplerHeader);
+            if (texture is null || sampler is null) {
+                return false;
             }
+            bindings ~= SDL_GPUTextureSamplerBinding(texture.Texture, sampler);
         }
+        return true;
     }
 
     // Draws
@@ -638,13 +641,17 @@ final class HostRenderer : GpuRenderer {
 
         DebugTextures(engine, ShaderStage.VertexB);
         DebugTextures(engine, ShaderStage.Fragment);
-        PrepareTextures(engine, ShaderStage.VertexB);
-        PrepareTextures(engine, ShaderStage.Fragment);
 
         CachedShader* vertex = Shader(engine, ShaderStage.VertexB, ShaderStageKind.Vertex);
         CachedShader* fragment = Shader(engine, ShaderStage.Fragment, ShaderStageKind.Fragment);
         if (vertex is null || fragment is null)
             return false;
+
+        SDL_GPUTextureSamplerBinding[] vertexTextures;
+        SDL_GPUTextureSamplerBinding[] fragmentTextures;
+        if (!TextureBindings(engine, ShaderStage.VertexB, vertex.Translation.Textures, vertexTextures) || !TextureBindings(engine, ShaderStage.Fragment, fragment.Translation.Textures, fragmentTextures)) {
+            return false;
+        }
 
         RenderTargetTexture*[RenderTargetCount] targetStorage;
         size_t targetCount;
@@ -728,6 +735,12 @@ final class HostRenderer : GpuRenderer {
             SDL_BindGPUVertexStorageBuffers(pass, 0, vertexStorage.ptr, cast(uint) vertexStorage.length);
         if (fragmentStorage.length > 0)
             SDL_BindGPUFragmentStorageBuffers(pass, 0, fragmentStorage.ptr, cast(uint) fragmentStorage.length);
+        if (vertexTextures.length > 0) {
+            SDL_BindGPUVertexSamplers(pass, 0, vertexTextures.ptr, cast(uint) vertexTextures.length);
+        }
+        if (fragmentTextures.length > 0) {
+            SDL_BindGPUFragmentSamplers(pass, 0, fragmentTextures.ptr, cast(uint) fragmentTextures.length);
+        }
         SDL_PushGPUVertexUniformData(commands, 0, viewParams.ptr, viewParams.sizeof);
         if (indexBuffer !is null) {
             SDL_GPUBufferBinding indexBinding;
