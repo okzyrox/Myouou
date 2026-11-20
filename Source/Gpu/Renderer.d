@@ -108,6 +108,7 @@ final class HostRenderer : GpuRenderer {
     // TODO: host render targets are never written back to guest memory
     private RenderTargetTexture[ulong] targets;
     private RenderTargetTexture[ulong] depthTargets;
+    private bool[ulong] sampledTargets;
     private CachedShader[ulong] shaders;
     private SDL_GPUGraphicsPipeline*[string] pipelines;
     private bool[string] failures;
@@ -834,6 +835,22 @@ final class HostRenderer : GpuRenderer {
         }
     }
 
+    private SDL_GPUTexture* TargetAsTexture(const ref TextureHeader header) {
+        ulong address;
+        if (!memory.Translate(header.Address, address)) {
+            return null;
+        }
+        RenderTargetTexture* target = address in targets;
+        if (target is null || target.Width != header.Width || target.Height != header.Height) {
+            return null;
+        }
+        if (address !in sampledTargets) {
+            sampledTargets[address] = true;
+            log.Info("Sampling host render target texture %dx%d at guest 0x%X.", target.Width, target.Height, address);
+        }
+        return target.Texture;
+    }
+
     private bool TextureBindings(Maxwell3D engine, ShaderStage stage, const(uint)[] offsets, out SDL_GPUTextureSamplerBinding[] bindings) {
         // Bindings follow each texture's cbuf offset in order
         foreach (offset; offsets) { 
@@ -844,9 +861,17 @@ final class HostRenderer : GpuRenderer {
                 FailOnce(format("binding%d:%X", stage, offset), "Stage %d texture at cbuf offset 0x%X has no valid descriptors!", stage, offset);
                 return false;
             }
-            CachedTexture* texture = textureCache.Texture(header);
             SDL_GPUSampler* sampler = textureCache.Sampler(samplerHeader);
-            if (texture is null || sampler is null) {
+            if (sampler is null) {
+                return false;
+            }
+            SDL_GPUTexture* rendered = TargetAsTexture(header);
+            if (rendered !is null) {
+                bindings ~= SDL_GPUTextureSamplerBinding(rendered, sampler);
+                continue;
+            }
+            CachedTexture* texture = textureCache.Texture(header);
+            if (texture is null) {
                 return false;
             }
             bindings ~= SDL_GPUTextureSamplerBinding(texture.Texture, sampler);
