@@ -11,10 +11,14 @@
 module Source.Emulator.Execution;
 
 // Std
+import std.file : exists, getcwd, isFile;
+import std.path : buildPath, extension;
 import std.stdio;
+import std.uni : toLower;
 
 // Core
 import Source.Emulator.GuestEnv;
+import Source.FileSystem.Storage;
 import Source.Kernel.Kernel;
 import Source.Kernel.Svc;
 import Source.Loader.Executable;
@@ -41,6 +45,18 @@ void DebugRegs(DynarmicJit jit) {
     writefln("\nSP  0x%016X\nPC  0x%016X", jit.Sp, jit.Pc);
 }
 
+string ResolveExecutablePath(string path) {
+    // Only for installed homebrew, just as a nice qol.
+    if (exists(path) || extension(path).toLower != ".nro") {
+        return path;
+    }
+    const string installed = buildPath(getcwd(), StorageFolder, HomebrewFolder, path);
+    if (exists(installed) && isFile(installed)) {
+        return installed;
+    }
+    return path;
+}
+
 Executable OpenExecutable(string path) {
     File file = File(path, "rb");
     ubyte[] header = new ubyte[HeaderProbeSize];
@@ -58,6 +74,12 @@ Executable OpenExecutable(string path) {
 
 // Main
 int RunFile(string path) {
+    path = ResolveExecutablePath(path);
+    if (!exists(path) || !isFile(path)) {
+        writefln("File not found: %s", path);
+        return 1;
+    }
+
     Executable executable;
     try {
         executable = OpenExecutable(path);

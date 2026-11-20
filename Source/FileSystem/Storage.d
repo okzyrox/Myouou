@@ -24,6 +24,7 @@ import Source.Util.Logger;
 
 // Types
 enum string StorageFolder = "sandbox/fs";
+enum string HomebrewFolder = "sdmc/switch"; // QoL alias
 
 enum BisPartitionId : uint {
     UserDataRoot = 20,
