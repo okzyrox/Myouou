@@ -452,4 +452,11 @@ final class IpcContext {
     size_t WriteOutput(T)(size_t index, const ref T value) if (!is(T : const(ubyte)[])) {
         return WriteOutput(index, (cast(const(ubyte)*) &value)[0 .. T.sizeof]);
     }
+
+    void WriteName(string name, size_t size) {
+        ubyte[] raw = new ubyte[min(size, OutputSize(0))];
+        const size_t length = min(name.length, raw.length);
+        raw[0 .. length] = cast(const(ubyte)[]) name[0 .. length];
+        WriteOutput(0, raw);
+    }
 }

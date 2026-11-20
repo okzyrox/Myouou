@@ -7,5 +7,6 @@
         "${env:DEVKITPRO_PATH}/libnx/include/**",
         "${env:DEVKITPRO_PATH}/portlibs/switch/include/**",
         "${workspaceFolder}/**"
-    ]
+    ],
+    "cmake.autoDetectSourceDirectory": false
 }

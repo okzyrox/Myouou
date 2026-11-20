@@ -124,6 +124,7 @@ final class AudioRendererService : IPCService {
     private AudioState state;
     private AudioRendererParameter parameter;
     private AudioRenderer renderer;
+    private HostAudioStream output;
     private KEvent systemEvent;
     private bool started;
     private uint renderingTimeLimit = 100;
@@ -158,7 +159,9 @@ final class AudioRendererService : IPCService {
     private void Start(IpcContext context) {
         started = true;
         lastRender = MonoTime.currTime;
-        state.Output.Open(parameter.SampleRate, OutputChannels);
+        if (output is null) {
+            output = state.Output.OpenStream(parameter.SampleRate, OutputChannels);
+        }
     }
 
     private void Stop(IpcContext context) {
@@ -166,12 +169,12 @@ final class AudioRendererService : IPCService {
     }
 
     private void RequestUpdate(IpcContext context) {
-        ubyte[] output;
-        if (!renderer.Update(context.ReadInput(0), output)) {
+        ubyte[] outputData;
+        if (!renderer.Update(context.ReadInput(0), outputData)) {
             context.Result(AudioResult.InvalidUpdateInfo);
             return;
         }
-        context.WriteOutput(0, output[0 .. min(output.length, context.OutputSize(0))]);
+        context.WriteOutput(0, outputData[0 .. min(outputData.length, context.OutputSize(0))]);
         if (started) {
             Render();
         }
@@ -188,14 +191,13 @@ final class AudioRendererService : IPCService {
         }
 
         const size_t frameBytes = parameter.SampleCount * OutputChannels * short.sizeof;
-        const size_t queued = state.Output.QueuedBytes;
-        if (state.Output.IsOpen && queued < frameBytes * MinQueuedFrames) {
+        if (output !is null && output.QueuedBytes < frameBytes * MinQueuedFrames) {
             due++;
         }
         foreach (_; 0 .. due) {
             const short[] samples = renderer.Render();
-            if (state.Output.QueuedBytes < frameBytes * MaxQueuedFrames) {
-                state.Output.Queue(samples);
+            if (output !is null && output.QueuedBytes < frameBytes * MaxQueuedFrames) {
+                output.Queue(samples);
             }
         }
     }

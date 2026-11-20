@@ -34,6 +34,7 @@ import Source.Wrapper.DynarmicJit;
 import Source.Service.Acc;
 import Source.Service.Am;
 import Source.Service.Audio;
+import Source.Service.AudioOut;
 import Source.Service.Apm;
 import Source.Service.Fs;
 import Source.Gpu.Gpu;
@@ -210,6 +211,7 @@ final class HorizonKernel {
         }
 
         Services.Register("audren:u", () => cast(IPCService) new AudioRendererManagerService(Audio));
+        Services.Register("audout:u", () => cast(IPCService) new AudioOutManagerService(Audio));
         Services.Register("fsp-srv", () => cast(IPCService) new FileSystemProxyService(Storage, ProgramId));
     }
 
