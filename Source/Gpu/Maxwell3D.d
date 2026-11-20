@@ -38,7 +38,14 @@ enum Maxwell3DMethod : uint {
     ClearStencil = 0x368,
     VertexAttributeFormats = 0x458,
     RenderTargetControl = 0x487,
+    LinkedTsc = 0x48D,
     WindowOrigin = 0x4EB,
+    TexHeaderPoolHigh = 0x557,
+    TexHeaderPoolLow = 0x558,
+    TexHeaderPoolLimit = 0x559,
+    TexSamplerPoolHigh = 0x55D,
+    TexSamplerPoolLow = 0x55E,
+    TexSamplerPoolLimit = 0x55F,
     ProgramRegionHigh = 0x582,
     ProgramRegionLow = 0x583,
     DrawEnd = 0x585,
@@ -67,6 +74,7 @@ enum Maxwell3DMethod : uint {
     ConstBufferDataEnd = 0x8F4,
     ConstBufferBind = 0x904,
     ConstBufferBindEnd = 0x92C,
+    TexConstBufferIndex = 0x982,
     MacroStart = 0xE00,
 }
 
