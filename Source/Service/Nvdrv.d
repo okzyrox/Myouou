@@ -17,8 +17,10 @@ import std.string : fromStringz;
 
 // Core
 import Source.Util.Logger;
+import Source.Gpu.Gpu;
 import Source.Kernel.Ipc;
 import Source.Kernel.Objects;
+import Source.Service.NvGpu;
 import Source.Service.Service;
 
 // Types
@@ -102,6 +104,14 @@ abstract class NvDevice {
     NvError Ioctl(NvIoctl request, ubyte[] data) {
         log.Stub("No ioctl 0x%08X (group 0x%02X nr 0x%02X)", request.Raw, request.Group, request.Number);
         return NvError.Success;
+    }
+
+    NvError Ioctl2(NvIoctl request, ubyte[] data, const(ubyte)[] inlineInput) {
+        return Ioctl(request, data);
+    }
+
+    NvError Ioctl3(NvIoctl request, ubyte[] data, ubyte[] inlineOutput) {
+        return Ioctl(request, data);
     }
 
     KEvent QueryEvent(uint eventId) {
@@ -223,13 +233,24 @@ final class NvMapDevice : NvDevice {
 
 final class NvHostCtrlDevice : NvDevice {
     private KEvent[uint] events;
+    private Gpu gpu;
 
-    this() {
+    this(Gpu gpu) {
         super("/dev/nvhost-ctrl");
+        this.gpu = gpu;
     }
 
     override NvError Ioctl(NvIoctl request, ubyte[] data) {
         switch (request.Number) {
+            case 0x14:
+                SetField!uint(data, 4, gpu.Syncpoints[Field!uint(data, 0) % MaxSyncpoints]);
+                return NvError.Success;
+            case 0x15:
+                gpu.IncrementSyncpoint(Field!uint(data, 0));
+                return NvError.Success;
+            case 0x16:
+            case 0x19:
+                return NvError.Success;
             case 0x1B:
                 log.Trace("GetConfig");
                 return NvError.NotSupported;
@@ -262,20 +283,30 @@ final class NvHostCtrlDevice : NvDevice {
 
 // State
 final class NvState {
+    Gpu Graphics;
     NvMapDevice Map;
     NvHostCtrlDevice HostCtrl;
+    NvHostCtrlGpuDevice HostCtrlGpu;
+    NvHostAsGpuDevice HostAsGpu;
     private NvDevice[uint] files;
     private uint nextFd = 1;
+    private uint nextChannelSyncpoint = 0x10;
 
-    this() {
+    this(Gpu gpu) {
+        Graphics = gpu;
         Map = new NvMapDevice();
-        HostCtrl = new NvHostCtrlDevice();
+        HostCtrl = new NvHostCtrlDevice(gpu);
+        HostCtrlGpu = new NvHostCtrlGpuDevice(gpu);
+        HostAsGpu = new NvHostAsGpuDevice(gpu, Map);
     }
 
     NvDevice Open(string path) {
         switch (path) {
             case "/dev/nvmap": return Map;
             case "/dev/nvhost-ctrl": return HostCtrl;
+            case "/dev/nvhost-ctrl-gpu": return HostCtrlGpu;
+            case "/dev/nvhost-as-gpu": return HostAsGpu;
+            case "/dev/nvhost-gpu": return new NvHostGpuChannelDevice(Graphics, nextChannelSyncpoint++);
             default: return new NvStubDevice(path);
         }
     }
@@ -305,15 +336,15 @@ final class NvdrvService : IPCService {
         this.name = name;
         this.state = state;
         Command(0, "Open", &Open);
-        Command(1, "Ioctl", &Ioctl);
+        Command(1, "Ioctl", (IpcContext c) => Ioctl(c, 1));
         Command(2, "Close", &Close);
         Command(3, "Initialize", (IpcContext c) => c.Push!uint(NvError.Success));
         Command(4, "QueryEvent", &QueryEvent);
         Command(6, "GetStatus", (IpcContext c) => c.Push!uint(NvError.Success));
         Command(8, "SetAruid", (IpcContext c) => c.Push!uint(NvError.Success));
         Command(9, "DumpGraphicsMemoryInfo", (IpcContext c) => c.Push!uint(NvError.Success));
-        Command(11, "Ioctl2", &Ioctl);
-        Command(12, "Ioctl3", &Ioctl);
+        Command(11, "Ioctl2", (IpcContext c) => Ioctl(c, 2));
+        Command(12, "Ioctl3", (IpcContext c) => Ioctl(c, 3));
         Command(13, "SetGraphicsFirmwareMemoryMarginEnabled", (IpcContext c) => c.Push!uint(NvError.Success));
     }
 
@@ -331,7 +362,7 @@ final class NvdrvService : IPCService {
         context.Push!uint(NvError.Success);
     }
 
-    private void Ioctl(IpcContext context) {
+    private void Ioctl(IpcContext context, int variant) {
         const uint fd = context.Pop!uint();
         const NvIoctl request = NvIoctl(context.Pop!uint());
         NvDevice device = state.File(fd);
@@ -348,9 +379,19 @@ final class NvdrvService : IPCService {
             data[0 .. length] = input[0 .. length];
         }
 
-        const NvError result = device.Ioctl(request, data);
+        NvError result;
+        if (variant == 2) {
+            result = device.Ioctl2(request, data, context.ReadInput(1));
+        } else if (variant == 3) {
+            ubyte[] inlineOutput = new ubyte[request.Size];
+            result = device.Ioctl3(request, data, inlineOutput);
+            context.WriteOutput(1, inlineOutput);
+        } else {
+            result = device.Ioctl(request, data);
+        }
         if (request.HasOutput)
             context.WriteOutput(0, data);
+        device.Log.Trace("ioctl%s fd %d 0x%08X -> %s", variant == 1 ? "" : format("%d", variant), fd, request.Raw, result);
         context.Push!uint(result);
     }
 
