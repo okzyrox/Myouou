@@ -191,7 +191,7 @@ final class HorizonKernel {
         foreach (name; ["nvdrv", "nvdrv:a", "nvdrv:s", "nvdrv:t"])
             Services.Register(name, NvdrvFactory(name));
         foreach (viService; ["vi:u": 0, "vi:s": 1, "vi:m": 2].byPair) {
-            Services.Register(viService[0], viService[1]);
+            Services.Register(viService[0], ViFactory(viService[0], viService[1]));
         }
         foreach (name; ["acc:u0", "acc:u1"]) {
             Services.Register(name, AccountFactory(name));
