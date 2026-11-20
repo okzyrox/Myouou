@@ -128,9 +128,6 @@ final class AccountService : IPCService {
         return name;
     }
 
-    private void Succeed(IpcContext context) {
-    }
-
     private void GetUserCount(IpcContext context) {
         context.Push!int(cast(int) state.Users.length);
     }

@@ -72,9 +72,9 @@ static assert(SaveDataAttribute.sizeof == 0x40);
 // BIS
 immutable string[] NandFolders = [
     "system/Contents/registered",
-    "system/Contents/placehld"
+    "system/Contents/placehld",
     "user/Contents/registered",
-    "user/Contents/placehld"
+    "user/Contents/placehld",
     "system/save",
     "user/save",
     "safe", // SafeMode partition

@@ -58,6 +58,9 @@ abstract class IPCService {
     }
 
     // Utils
+    void Succeed(IpcContext context) {
+    }
+
     void True(IpcContext context) {
         context.Push!ubyte(1);
     }
