@@ -20,6 +20,7 @@ Externals/boost/*
 !Externals/boost/boost.md
 
 # Executables & Data
+sandbox/*
 *.elf
 *.nro
 *.nacp

@@ -49,17 +49,18 @@ void DebugRegs(DynarmicJit jit) {
 }
 
 // Main
-size_t svcLimit = 20_000;
 int RunFile(string path) {
     NROFile nro = NROFile.Load(path);
     DebugNROFile(nro);
 
     GuestMemory memory = new GuestMemory();
-    NROData loaded = LoadNROToMemory(memory, nro);
     GuestEnvironment environment = new GuestEnvironment(memory);
-
     DynarmicJit jit = environment.CreateJit();
-    HorizonKernel kernel = new HorizonKernel(environment, cast(uint) loaded.MainThreadHandle);
+
+    Layout layout;
+    HorizonKernel kernel = new HorizonKernel(environment, cast(uint)layout.MainThreadHandle);
+    layout.Argv = "\"" ~ kernel.Storage.ExposeToSDMC(path) ~ "\""; // a bit messy
+    NROData loaded = LoadNROToMemory(memory, nro, layout);
     LoadEntry(environment, jit, loaded);
 
     writefln("Loaded 0x%X, 0x%X. top 0x%X", loaded.ImgBase, loaded.EntryPoint, loaded.StackTop);
@@ -89,7 +90,7 @@ int RunFile(string path) {
                 return 0;
             }
         }
-        else if (svcCount >= svcLimit) {
+        else if (svcCount >= 20_000) {
             DebugRegs(jit);
             return 1;
         }

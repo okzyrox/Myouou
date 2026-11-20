@@ -30,6 +30,7 @@ import Source.Memory.Guest;
 import Source.Wrapper.DynarmicJit;
 
 // Services
+import Source.Service.Acc;
 import Source.Service.Am;
 import Source.Service.Apm;
 import Source.Gpu.Gpu;
@@ -41,6 +42,9 @@ import Source.Service.Set;
 import Source.Service.Sm;
 import Source.Service.Time;
 import Source.Service.Vi;
+
+// Mapped
+import Source.FileSystem.Storage;
 
 // Frontend
 import Source.Frontend.HostDisplay;
@@ -132,6 +136,8 @@ final class HorizonKernel {
     NvState Nv;
     ViState Vi;
     TimeState Time;
+    SwitchStorage Storage;
+    AccountState Accounts;
     HostDisplay Display;
 
     ulong ProgramId = 0x0100_0000_0000_100D;
@@ -165,6 +171,11 @@ final class HorizonKernel {
         Nv = new NvState(Graphics);
         Vi = new ViState(Memory, Nv, Display);
         Time = new TimeState();
+        Storage = new SwitchStorage();
+        Accounts = new AccountState();
+        Applet.Storage = Storage;
+        Applet.ProgramId = ProgramId;
+        Applet.PreselectedUser = Accounts.Users[0].Uid;
         Services = new ServiceRegistry();
         RegisterServices();
     }
@@ -180,6 +191,9 @@ final class HorizonKernel {
         Services.Register("vi:u", ViFactory("vi:u", 0));
         Services.Register("vi:s", ViFactory("vi:s", 1));
         Services.Register("vi:m", ViFactory("vi:m", 2));
+        foreach (name; ["acc:u0", "acc:u1"]) {
+            Services.Register(name, AccountFactory(name));
+        }
         foreach (name; ["time:u", "time:a", "time:s"]) {
             Services.Register(name, TimeFactory(name));
         }
@@ -196,6 +210,10 @@ final class HorizonKernel {
 
     private ServiceFactory ViFactory(string name, uint commandId) {
         return () => cast(IPCService) new ViRootService(name, commandId, Vi);
+    }
+
+    private ServiceFactory AccountFactory(string name) {
+        return () => cast(IPCService) new AccountService(name, Accounts);
     }
 
     private ServiceFactory TimeFactory(string name) {
