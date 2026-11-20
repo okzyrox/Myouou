@@ -25,6 +25,7 @@ import Source.Gpu.MemoryManager;
 import Source.Gpu.Shader.Instructions;
 import Source.Gpu.Shader.Translator;
 import Source.Gpu.Texture;
+import Source.Gpu.TextureCache;
 import Source.Util.Logger;
 
 // Types
@@ -110,6 +111,7 @@ final class HostRenderer : GpuRenderer {
     private SDL_GPUGraphicsPipeline*[string] pipelines;
     private bool[string] failures;
     private bool[string] describedTextures; // temp
+    private TextureCache textureCache;
     private Logger log;
 
     this(HostDisplay display, GpuMemoryManager memory) {
@@ -117,6 +119,7 @@ final class HostRenderer : GpuRenderer {
         this.memory = memory;
         log = GetLogger("Gpu::Renderer");
         display.FindHostSurface = &FindSurface;
+        textureCache = new TextureCache(display, memory);
     }
 
     private SDL_GPUDevice* Device() {
@@ -601,6 +604,24 @@ final class HostRenderer : GpuRenderer {
         }
     }
 
+    // todo: bind to shaders
+    private void PrepareTextures(Maxwell3D engine, ShaderStage stage) {
+        foreach (offset; TextureOffsets(ReadProgram(engine.ShaderAddress(stage)), ShaderHeaderWords)) {
+            TextureHandle handle;
+            if (!engine.ReadTextureHandle(stage, offset, handle)) {
+                continue;
+            }
+            TextureHeader header;
+            if (engine.ReadTextureHeader(handle.HeaderIndex, header)) {
+                textureCache.Texture(header);
+            }
+            SamplerHeader sampler;
+            if (engine.ReadSamplerHeader(engine.SamplerIndex(handle), sampler)) {
+                textureCache.Sampler(sampler);
+            }
+        }
+    }
+
     // Draws
     bool Draw(Maxwell3D engine, uint topology, uint first, uint count, bool indexed) {
         if (count == 0)
@@ -617,6 +638,8 @@ final class HostRenderer : GpuRenderer {
 
         DebugTextures(engine, ShaderStage.VertexB);
         DebugTextures(engine, ShaderStage.Fragment);
+        PrepareTextures(engine, ShaderStage.VertexB);
+        PrepareTextures(engine, ShaderStage.Fragment);
 
         CachedShader* vertex = Shader(engine, ShaderStage.VertexB, ShaderStageKind.Vertex);
         CachedShader* fragment = Shader(engine, ShaderStage.Fragment, ShaderStageKind.Fragment);
