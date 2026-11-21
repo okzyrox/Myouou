@@ -10,8 +10,12 @@
 
 module Source.Service.Set;
 
+// Std
+import std.algorithm : min;
+
 // Core
 import Source.Kernel.Ipc;
+import Source.Kernel.Result;
 import Source.Service.Service;
 
 // Types
@@ -37,6 +41,24 @@ enum ubyte EmulatedMajor = 4;
 enum ubyte EmulatedMinor = 0;
 enum ubyte EmulatedMicro = 0;
 
+// Languages
+immutable string[] LanguageCodes = ["ja", "en-US", "fr", "de", "it", "es", "zh-CN", "ko", "nl", "pt", "ru", "zh-TW", "en-GB", "fr-CA", "es-419", "zh-Hans", "zh-Hant"];
+enum size_t LegacyLanguageCount = 15;
+enum size_t DefaultLanguage = 1; // en-US
+
+enum RegionCode : int {
+    Japan = 0,
+    Usa = 1,
+    Europe = 2,
+    Australia = 3,
+    China = 4,
+    Taiwan = 6
+}
+
+enum SetResult : uint {
+    InvalidLanguage = MakeModuleResult(105, 625),
+}
+
 // Utils
 FirmwareVersion FirmwareData() {
     FirmwareVersion firmware;
@@ -54,7 +76,53 @@ private void FillBuf(char[] destination, string text) {
     destination[0 .. text.length] = text[];
 }
 
+ulong LanguageCode(string text) {
+    ulong code = 0;
+    foreach (i, c; text) {
+        code |= cast(ulong) c << (i * 8);
+    }
+    return code;
+}
+
 // Service
+final class SetService : IPCService {
+    this() {
+        Command(0, "GetLanguageCode", (IpcContext c) => c.Push!ulong(LanguageCode(LanguageCodes[DefaultLanguage])));
+        Command(1, "GetAvailableLanguageCodes", (IpcContext c) => WriteCodes(c, LegacyLanguageCount));
+        Command(2, "MakeLanguageCode", &MakeLanguageCode);
+        Command(3, "GetAvailableLanguageCodeCount", (IpcContext c) => c.Push!int(cast(int) LegacyLanguageCount));
+        Command(4, "GetRegionCode", (IpcContext c) => c.Push!int(RegionCode.Usa));
+        Command(5, "GetAvailableLanguageCodes2", (IpcContext c) => WriteCodes(c, LanguageCodes.length));
+        Command(6, "GetAvailableLanguageCodeCount2", (IpcContext c) => c.Push!int(cast(int) LanguageCodes.length));
+        Stub(7, "GetKeyCodeMap");
+        Command(8, "GetQuestFlag", &False);
+        Stub(9, "GetKeyCodeMap2");
+    }
+
+    override string Name() const {
+        return "set"; // ISettingsServer
+    }
+
+    private static void WriteCodes(IpcContext context, size_t available) {
+        const size_t count = min(available, context.OutputSize(0) / ulong.sizeof);
+        ulong[] codes = new ulong[count];
+        foreach (i; 0 .. count) {
+            codes[i] = LanguageCode(LanguageCodes[i]);
+        }
+        context.WriteOutput(0, cast(const(ubyte)[]) codes);
+        context.Push!int(cast(int) count);
+    }
+
+    private void MakeLanguageCode(IpcContext context) {
+        const uint language = context.Pop!uint();
+        if (language >= LanguageCodes.length) {
+            context.Result(SetResult.InvalidLanguage);
+            return;
+        }
+        context.Push!ulong(LanguageCode(LanguageCodes[language]));
+    }
+}
+
 final class SetSysService : IPCService {
     this() {
         Command(3, "GetFirmwareVersion", &GetFirmwareVersion);
@@ -62,7 +130,7 @@ final class SetSysService : IPCService {
     }
 
     override string Name() const {
-        return "set:sys";
+        return "set:sys"; // ISystemSettingsServer
     }
 
     private void GetFirmwareVersion(IpcContext context) {

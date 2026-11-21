@@ -195,6 +195,7 @@ final class HorizonKernel {
 
     private void RegisterServices() {
         Services.Register!SetSysService("set:sys");
+        Services.Register!SetService("set");
         Services.Register("appletOE", () => cast(IPCService) new AppletOEService(Applet));
         foreach (name; ["apm", "apm:am", "apm:p"])
             Services.Register(name, ApmFactory(name));
