@@ -28,6 +28,7 @@ import Source.Gpu.Shader.ShaderCache;
 import Source.Gpu.Shader.Translator;
 import Source.Gpu.Texture;
 import Source.Gpu.TextureCache;
+import Source.Graphics.BlockLinear;
 import Source.Util.Logger;
 
 // Types
@@ -91,6 +92,13 @@ struct RenderTargetTexture {
     uint Width;
     uint Height;
     SDL_GPUTextureFormat Format;
+    ulong GuestAddress;
+    ulong GpuAddress;
+    size_t GuestSize;
+    size_t BytesPerPixel;
+    uint BlockHeightLog2;
+    bool BlockLinear;
+    bool GuestDirty;
 }
 
 struct VertexLayout {
@@ -179,6 +187,7 @@ final class HostRenderer : GpuRenderer {
         display.FindHostSurface = &FindSurface;
         textureCache = new TextureCache(display, memory);
         textureCache.BeforeUpload = &Flush;
+        memory.OnWrite = &GuestWritten;
     }
 
     private SDL_GPUDevice* Device() {
@@ -229,8 +238,12 @@ final class HostRenderer : GpuRenderer {
         }
 
         RenderTargetTexture* existing = address in targets;
-        if (existing !is null && existing.Width == target.Width && existing.Height == target.Height && existing.Format == hostFormat)
+        if (existing !is null && existing.Width == target.Width && existing.Height == target.Height && existing.Format == hostFormat) {
+            if (existing.GuestDirty) {
+                ReloadFromGuest(*existing);
+            }
             return existing;
+        }
         if (existing !is null) {
             Flush();
             SDL_ReleaseGPUTexture(Device, existing.Texture);
@@ -248,8 +261,50 @@ final class HostRenderer : GpuRenderer {
             return null;
         }
         log.Info("Host render target %dx%d format 0x%X for guest 0x%X", target.Width, target.Height, target.Format, address);
-        targets[address] = RenderTargetTexture(texture, target.Width, target.Height, hostFormat);
-        return address in targets;
+        RenderTargetTexture created = RenderTargetTexture(texture, target.Width, target.Height, hostFormat);
+        created.GuestAddress = address;
+        created.GpuAddress = target.Address;
+        created.BytesPerPixel = target.BytesPerPixel;
+        created.BlockHeightLog2 = target.BlockHeightLog2;
+        created.BlockLinear = !target.PitchLinear;
+        if (created.BlockLinear) {
+            created.GuestSize = BlockLinearSize(GuestPitch(created), created.Height, created.BlockHeightLog2);
+        }
+        targets[address] = created;
+        RenderTargetTexture* stored = address in targets;
+        ReloadFromGuest(*stored);
+        return stored;
+    }
+
+    // Guest writes
+    private static size_t GuestPitch(const ref RenderTargetTexture target) {
+        return (target.Width * target.BytesPerPixel + GobWidth - 1) & ~(GobWidth - 1);
+    }
+
+    private void GuestWritten(ulong cpuAddress, size_t size) {
+        textureCache.GuestWritten(cpuAddress, size);
+        foreach (ref target; targets) {
+            // should hopefully encapsulate most possible changes?
+            // unless a target is changed to the same size at the same address
+            if (target.GuestSize != 0 && target.GuestAddress < cpuAddress + size && cpuAddress < target.GuestAddress + target.GuestSize) {
+                target.GuestDirty = true;
+            }
+        }
+    }
+
+    private void ReloadFromGuest(ref RenderTargetTexture target) {
+        target.GuestDirty = false;
+        if (!target.BlockLinear || target.GuestSize == 0) {
+            return;
+        }
+        Flush();
+        const size_t rowBytes = target.Width * target.BytesPerPixel;
+        ubyte[] guest = new ubyte[target.GuestSize];
+        ubyte[] pixels = new ubyte[rowBytes * target.Height];
+        memory.Read(target.GpuAddress, guest);
+        BlockLinearDeswizzle(guest, pixels, rowBytes, target.Height, GuestPitch(target), target.BlockHeightLog2);
+        display.UploadTexture(target.Texture, pixels, target.Width, target.Height, target.Width);
+        log.Trace("Reloaded render target (%dx%d) at guest memory addr 0x%X.", target.Width, target.Height, target.GuestAddress);
     }
 
     private bool FindSurface(ulong address, out HostSurface surface) {
@@ -1010,6 +1065,9 @@ final class HostRenderer : GpuRenderer {
         RenderTargetTexture* target = address in targets;
         if (target is null || target.Width != header.Width || target.Height != header.Height) {
             return null;
+        }
+        if (target.GuestDirty) {
+            ReloadFromGuest(*target);
         }
         if (address !in sampledTargets) {
             sampledTargets[address] = true;

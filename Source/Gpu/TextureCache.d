@@ -242,7 +242,7 @@ final class TextureCache {
         }
     }
 
-    private void GuestWritten(ulong cpuAddress, size_t size) {
+    void GuestWritten(ulong cpuAddress, size_t size) {
         if (size == 0) {
             return;
         }
