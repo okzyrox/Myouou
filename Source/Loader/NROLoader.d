@@ -11,6 +11,7 @@
 module Source.Loader.NROLoader;
 
 // Std
+import std.path : baseName, stripExtension;
 import std.stdio;
 
 // Core
@@ -138,6 +139,14 @@ final class NROExecutable : Executable {
 
     string FormatName() const {
         return "NRO";
+    }
+
+    string TitleKey() const {
+        string key;
+        foreach (c; stripExtension(baseName(path))) { // just using the name for homebrew, although it may overlap with over homebrew
+            key ~= (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ? c : '_';
+        }
+        return key.length != 0 ? key : "homebrew";
     }
 
     void Describe() {

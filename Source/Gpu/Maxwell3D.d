@@ -99,6 +99,7 @@ enum Maxwell3DMethod : uint {
     QueryAddressLow = 0x6C1,
     QuerySequence = 0x6C2,
     QueryGet = 0x6C3,
+    VertexArrayInstanced = 0x620,
     VertexArrays = 0x700,
     IndependentBlend = 0x780,
     VertexArrayLimits = 0x7C0,
@@ -161,9 +162,19 @@ struct ConstBufferBinding {
     bool Enabled;
 }
 
+enum uint DrawBeginInstanceNext = 1 << 26;
+
+struct PendingInstancedDraw {
+    uint Topology;
+    uint First;
+    uint Count;
+    bool Indexed;
+    uint Instances;
+}
+
 interface GpuRenderer {
     bool Clear(Maxwell3D engine, uint argument);
-    bool Draw(Maxwell3D engine, uint topology, uint first, uint count, bool indexed);
+    bool Draw(Maxwell3D engine, uint topology, uint first, uint count, bool indexed, uint instances);
 }
 
 enum RenderTargetFormat : uint {
@@ -219,6 +230,7 @@ final class Maxwell3D : GpuEngine, MacroHost {
     private uint[] macroArguments;
     private ConstBufferBinding[ConstBuffersPerStage][ConstBufferStageCount] constBuffers;
     private bool indexedDraw;
+    private PendingInstancedDraw pendingDraw;
 
     this(Gpu gpu) {
         super(gpu, "Maxwell3D", Maxwell3DRegisterCount);
@@ -234,6 +246,9 @@ final class Maxwell3D : GpuEngine, MacroHost {
     }
 
     override void CallMethod(uint method, uint argument, bool isLastCall) {
+        if (pendingDraw.Instances != 0 && !IsDrawLoopMethod(method)) {
+            FlushDraws();
+        }
         if (method >= Maxwell3DMethod.MacroStart) {
             CallMacro(method, argument, isLastCall);
             return;
@@ -394,13 +409,42 @@ final class Maxwell3D : GpuEngine, MacroHost {
     }
 
     // Methods
+    private static bool IsDrawLoopMethod(uint method) {
+        switch (method) {
+            case Maxwell3DMethod.DrawBegin, Maxwell3DMethod.DrawEnd, Maxwell3DMethod.VertexBufferFirst, Maxwell3DMethod.VertexBufferCount, Maxwell3DMethod.IndexBufferFirst, Maxwell3DMethod.IndexBufferCount:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     private void Draw() {
-        const uint topology = Registers[Maxwell3DMethod.DrawBegin] & 0xFFFF;
-        const uint first = indexedDraw ? Registers[Maxwell3DMethod.IndexBufferFirst] : Registers[Maxwell3DMethod.VertexBufferFirst];
-        const uint count = indexedDraw ? Registers[Maxwell3DMethod.IndexBufferCount] : Registers[Maxwell3DMethod.VertexBufferCount];
-        log.Trace("Draw: topology %d, first %d count %d%s", topology, first, count, indexedDraw ? " (indexed)" : "");
-        if (Renderer !is null)
-            Renderer.Draw(this, topology, first, count, indexedDraw);
+        const uint begin = Registers[Maxwell3DMethod.DrawBegin];
+        PendingInstancedDraw draw;
+        draw.Topology = begin & 0xFFFF;
+        draw.First = indexedDraw ? Registers[Maxwell3DMethod.IndexBufferFirst] : Registers[Maxwell3DMethod.VertexBufferFirst];
+        draw.Count = indexedDraw ? Registers[Maxwell3DMethod.IndexBufferCount] : Registers[Maxwell3DMethod.VertexBufferCount];
+        draw.Indexed = indexedDraw;
+        draw.Instances = 1;
+        const bool nextInstance = (begin & DrawBeginInstanceNext) != 0;
+        if (nextInstance && pendingDraw.Instances != 0 && pendingDraw.Topology == draw.Topology && pendingDraw.First == draw.First && pendingDraw.Count == draw.Count && pendingDraw.Indexed == draw.Indexed) {
+            pendingDraw.Instances++;
+            return;
+        }
+        FlushDraws();
+        pendingDraw = draw;
+    }
+
+    void FlushDraws() {
+        if (pendingDraw.Instances == 0) {
+            return;
+        }
+        const PendingInstancedDraw draw = pendingDraw;
+        pendingDraw = PendingInstancedDraw.init;
+        log.Trace("Draw: topology %d, first %d count %d, %d instances%s", draw.Topology, draw.First, draw.Count, draw.Instances, draw.Indexed ? " (indexed)" : "");
+        if (Renderer !is null) {
+            Renderer.Draw(this, draw.Topology, draw.First, draw.Count, draw.Indexed, draw.Instances);
+        }
     }
 
     private void BindConstBuffer(uint stage, uint argument) {

@@ -11,6 +11,7 @@
 module Source.Gpu.Renderer;
 
 // Std
+import core.time : MonoTime;
 import std.format : format;
 import std.math : abs;
 import std.string : fromStringz;
@@ -23,6 +24,7 @@ import Source.Frontend.HostDisplay;
 import Source.Gpu.Maxwell3D;
 import Source.Gpu.MemoryManager;
 import Source.Gpu.Shader.Instructions;
+import Source.Gpu.Shader.ShaderCache;
 import Source.Gpu.Shader.Translator;
 import Source.Gpu.Texture;
 import Source.Gpu.TextureCache;
@@ -97,6 +99,7 @@ struct VertexLayout {
     SDL_GPUVertexAttribute[MaxVertexAttributes] Attributes;
     uint AttributeCount;
     uint[MaxVertexArrays] GuestArrays;
+    bool[MaxVertexArrays] PerInstance;
 }
 
 struct StagedUpload {
@@ -119,6 +122,7 @@ struct PendingDraw {
     SDL_GPUTextureSamplerBinding[] FragmentTextures;
     SDL_GPUBuffer* IndexBuffer;
     uint DrawCount;
+    uint Instances;
 }
 
 struct DrawBatch {
@@ -165,6 +169,7 @@ final class HostRenderer : GpuRenderer {
     private bool[string] describedTextures; // temp
     private TextureCache textureCache;
     private DrawBatch batch;
+    private ShaderDiskCache diskCache;
     private Logger log;
 
     this(HostDisplay display, GpuMemoryManager memory) {
@@ -178,6 +183,14 @@ final class HostRenderer : GpuRenderer {
 
     private SDL_GPUDevice* Device() {
         return display.Device;
+    }
+
+    void UseShaderCache(ShaderDiskCache cache) {
+        diskCache = cache;
+    }
+
+    private static double Milliseconds(MonoTime since) {
+        return (MonoTime.currTime - since).total!"usecs" / 1000.0;
     }
 
     private bool Ready() {
@@ -454,7 +467,15 @@ final class HostRenderer : GpuRenderer {
             return found.Shader is null ? null : found;
 
         CachedShader cached;
-        cached.Translation = TranslateShader(kind, program, swizzles);
+        const MonoTime translateStart = MonoTime.currTime;
+        const bool fromDisk = diskCache !is null && diskCache.Load(key, kind, cached.Translation);
+        if (!fromDisk) {
+            cached.Translation = TranslateShader(kind, program, swizzles);
+            if (diskCache !is null) {
+                diskCache.Store(key, cached.Translation);
+            }
+        }
+        const double translateTime = Milliseconds(translateStart);
         if (!cached.Translation.Ok) {
             log.Error("Stage %d shader at gpu 0x%X failed to translate: %s", stage, address, cached.Translation.Error);
             foreach (line; DisassembleProgram(program, ShaderHeaderWords))
@@ -473,11 +494,12 @@ final class HostRenderer : GpuRenderer {
         info.numStorageBuffers = cast(uint) cached.Translation.ConstBuffers.length;
         info.numSamplers = cast(uint) cached.Translation.Textures.length;
         info.numUniformBuffers = kind == ShaderStageKind.Vertex ? 1 : 0;
+        const MonoTime hostStart = MonoTime.currTime;
         cached.Shader = SDL_CreateGPUShader(Device, &info);
         if (cached.Shader is null)
             log.Error("Stage %d host shader creation failed: %s", stage, fromStringz(SDL_GetError()));
         else
-            log.Info("Translated stage %d shader at gpu 0x%X (%d instructions, %d bytes of SPIR-V)", stage, address, cached.Translation.InstructionCount, spirv.length);
+            log.Info("%s stage %d shader at gpu 0x%X (%d instructions, %d bytes of SPIR-V) in %.2f ms, host shader %.2f ms", fromDisk ? "Loaded cached" : "Translated", stage, address, cached.Translation.InstructionCount, spirv.length, translateTime, Milliseconds(hostStart));
         shaders[key] = cached;
         CachedShader* stored = key in shaders;
         return stored.Shader is null ? null : stored;
@@ -553,13 +575,21 @@ final class HostRenderer : GpuRenderer {
             }
 
             if (slots[buffer] < 0) {
+                const bool perInstance = (engine.Registers[Maxwell3DMethod.VertexArrayInstanced + buffer] & 1) != 0;
+                const uint divisor = engine.Registers[Maxwell3DMethod.VertexArrays + buffer * 4 + 3];
+                if (perInstance && divisor > 1) {
+                    // todo: instance divisors above 1, SDL GPU only steps once per instance
+                    FailOnce(format("divisor%d", divisor), "Vertex array %d uses instance divisor %d, which is not supported", buffer, divisor);
+                    return false;
+                }
                 slots[buffer] = layout.BufferCount;
                 SDL_GPUVertexBufferDescription description;
                 description.slot = layout.BufferCount;
                 description.pitch = engine.Registers[Maxwell3DMethod.VertexArrays + buffer * 4] & 0xFFF;
-                description.inputRate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+                description.inputRate = perInstance ? SDL_GPU_VERTEXINPUTRATE_INSTANCE : SDL_GPU_VERTEXINPUTRATE_VERTEX;
                 layout.Buffers[layout.BufferCount] = description;
                 layout.GuestArrays[layout.BufferCount] = buffer;
+                layout.PerInstance[layout.BufferCount] = perInstance;
                 layout.BufferCount++;
             }
 
@@ -670,9 +700,9 @@ final class HostRenderer : GpuRenderer {
                     SDL_GPUBufferBinding indexBinding;
                     indexBinding.buffer = draw.IndexBuffer;
                     SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                    SDL_DrawGPUIndexedPrimitives(pass, draw.DrawCount, 1, 0, 0, 0);
+                    SDL_DrawGPUIndexedPrimitives(pass, draw.DrawCount, draw.Instances, 0, 0, 0);
                 } else {
-                    SDL_DrawGPUPrimitives(pass, draw.DrawCount, 1, 0, 0);
+                    SDL_DrawGPUPrimitives(pass, draw.DrawCount, draw.Instances, 0, 0);
                 }
             }
             SDL_EndGPURenderPass(pass);
@@ -922,11 +952,12 @@ final class HostRenderer : GpuRenderer {
             info.depthStencilState = depthState;
         }
 
+        const MonoTime pipelineStart = MonoTime.currTime;
         SDL_GPUGraphicsPipeline* pipeline = SDL_CreateGPUGraphicsPipeline(Device, &info);
         if (pipeline is null)
             log.Error("Pipeline creation failed: %s", fromStringz(SDL_GetError()));
         else
-            log.Info("Created pipeline #%d", pipelines.length + 1);
+            log.Info("Created pipeline #%d in %.2f ms", pipelines.length + 1, Milliseconds(pipelineStart));
         pipelines[key] = pipeline;
         return pipeline;
     }
@@ -1016,7 +1047,7 @@ final class HostRenderer : GpuRenderer {
     }
 
     // Draws
-    bool Draw(Maxwell3D engine, uint topology, uint first, uint count, bool indexed) {
+    bool Draw(Maxwell3D engine, uint topology, uint first, uint count, bool indexed, uint instances) {
         if (count == 0)
             return true;
         if (!Ready() || !SupportedStages(engine))
@@ -1108,15 +1139,15 @@ final class HostRenderer : GpuRenderer {
             const ulong start = engine.Address(Maxwell3DMethod.VertexArrays + guestArray * 4 + 1);
             const ulong end = engine.Address(Maxwell3DMethod.VertexArrayLimits + guestArray * 2) + 1;
             const size_t stride = layout.Buffers[slot].pitch;
-            const ulong begin = start + cast(ulong) lowest * stride;
+            const uint firstElement = layout.PerInstance[slot] ? 0 : lowest;
+            const uint elementCount = layout.PerInstance[slot] ? instances : highest - lowest + 1;
+            const ulong begin = start + cast(ulong) firstElement * stride;
             if (end <= begin) {
                 FailOnce(format("va%d", guestArray), "Vertex array %d has bad range 0x%X..0x%X", guestArray, start, end);
                 return EndDraw();
             }
-            size_t size = stride == 0 ? ZeroStrideVertexBytes : (cast(size_t) (highest - lowest) + 1) * stride;
-            if (size > end - begin) {
-                size = cast(size_t) (end - begin);
-            }
+            const size_t size = stride == 0 ? ZeroStrideVertexBytes : cast(size_t) elementCount * stride;
+            const size_t available = size > end - begin ? cast(size_t) (end - begin) : size;
 
             foreach (previous; 0 .. slot) {
                 if (uploadedStarts[previous] == begin && uploadedSizes[previous] == size) {
@@ -1129,11 +1160,12 @@ final class HostRenderer : GpuRenderer {
             if (vertexBindings[slot].buffer !is null) {
                 continue;
             }
-            const ubyte[] data = ReadGuest(begin, size);
+            ubyte[] data = ReadGuest(begin, available);
             if (data is null) {
                 FailOnce(format("va%d", guestArray), "Vertex array %d has bad range 0x%X..0x%X", guestArray, start, end);
                 return EndDraw();
             }
+            data.length = size;
             vertexBindings[slot].buffer = UploadBuffer(data, SDL_GPU_BUFFERUSAGE_VERTEX);
             if (vertexBindings[slot].buffer is null)
                 return EndDraw();
@@ -1167,6 +1199,7 @@ final class HostRenderer : GpuRenderer {
         pending.FragmentTextures = fragmentTextures;
         pending.IndexBuffer = indexBuffer;
         pending.DrawCount = drawCount;
+        pending.Instances = instances;
         batch.Draws ~= pending;
         if (batch.Draws.length >= MaxBatchedDraws || batch.Staging.length >= MaxBatchedBytes) {
             Flush();

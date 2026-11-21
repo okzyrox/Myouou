@@ -852,6 +852,31 @@ private final class ShaderTranslator {
                 WritePredicatePair(instruction, compared);
                 return;
             }
+            case Opcode.IcmpReg, Opcode.IcmpCr, Opcode.IcmpRc, Opcode.IcmpImm: {
+                uint operand;
+                uint compared;
+                switch (instruction.Op) {
+                    case Opcode.IcmpReg:
+                        operand = Reg(instruction.SrcB);
+                        compared = Reg(instruction.SrcC);
+                        break;
+                    case Opcode.IcmpCr:
+                        operand = Cbuf(instruction.CbufIndex, instruction.CbufOffset);
+                        compared = Reg(instruction.SrcC);
+                        break;
+                    case Opcode.IcmpRc:
+                        operand = Reg(instruction.SrcC);
+                        compared = Cbuf(instruction.CbufIndex, instruction.CbufOffset);
+                        break;
+                    default:
+                        operand = b.ConstantUint(cast(uint) instruction.Imm20Signed);
+                        compared = Reg(instruction.SrcC);
+                        break;
+                }
+                const uint condition = IntCompare(cast(uint) instruction.Bits(49, 3), instruction.Bit(48), compared, b.ConstantUint(0));
+                SetReg(instruction.Dest, b.Value(SpvOp.Select, b.Uint, [condition, Reg(instruction.SrcA), operand]));
+                return;
+            }
             case Opcode.SelReg, Opcode.SelCbuf, Opcode.SelImm: {
                 const uint condition = SecondPred(instruction);
                 SetReg(instruction.Dest, b.Value(SpvOp.Select, b.Uint, [condition, Reg(instruction.SrcA), IntOperandB(instruction)]));

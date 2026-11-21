@@ -19,6 +19,8 @@ import std.uni : toLower;
 // Core
 import Source.Emulator.GuestEnv;
 import Source.FileSystem.Storage;
+import Source.Gpu.Renderer;
+import Source.Gpu.Shader.ShaderCache;
 import Source.Kernel.Kernel;
 import Source.Kernel.Svc;
 import Source.Loader.Executable;
@@ -95,6 +97,9 @@ int RunFile(string path) {
     DynarmicJit jit = environment.CreateJit();
 
     HorizonKernel kernel = new HorizonKernel(environment, DefaultMainThreadHandle);
+    if (HostRenderer renderer = cast(HostRenderer) kernel.Graphics.ThreeD.Renderer) {
+        renderer.UseShaderCache(new ShaderDiskCache(buildPath(getcwd(), ShaderCacheFolder, executable.TitleKey)));
+    }
     const ProgramEntry entry = executable.Load(memory, kernel);
     StartProgram(environment, jit, entry);
 

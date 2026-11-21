@@ -127,6 +127,7 @@ final class Gpu {
             MemoryManager.Read(entry.Address, cast(ubyte[]) words);
             ProcessPushBuffer(words);
         }
+        ThreeD.FlushDraws();
     }
 
     private void ProcessPushBuffer(const(uint)[] words) {
