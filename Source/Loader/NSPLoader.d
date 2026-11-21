@@ -19,6 +19,7 @@ import std.uni : toLower;
 // Core
 import Source.Crypto.Aes : AesBlockSize;
 import Source.Crypto.Keys;
+import Source.FileSystem.RomStorage;
 import Source.Format.NCA;
 import Source.Format.PFS0;
 import Source.Format.Ticket;
@@ -93,7 +94,14 @@ final class NSPExecutable {
                     throw new ExecutableError(format("Program NCA %s ExeFS did not decrypt to a PFS0 (%s)!", name, error.msg));
                 }
                 writefln("Running ExeFS from program NCA %s.", name);
-                return new ExeFSExecutable(new PFS0Source(exefs), Name, Extension);
+                ExeFSExecutable executable = new ExeFSExecutable(new PFS0Source(exefs), Name, Extension);
+                foreach (index, ref section; info.Sections) {
+                    if (section.Present && section.FsType == NCAFsType.RomFs) {
+                        executable.RomFS = new NCASectionStorage(path, archive.Find(name).Offset, *info, index, name ~ " section " ~ format("%d", index));
+                        break;
+                    }
+                }
+                return executable;
             }
             throw new ExecutableError(format("NSP has %d NCA files but no readable program NCA!", ncas.length + compressed));
         }

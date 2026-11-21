@@ -15,6 +15,7 @@ import std.path : baseName, stripExtension;
 import std.stdio;
 
 // Core
+import Source.FileSystem.RomStorage;
 import Source.Format.NRO;
 import Source.Kernel.Kernel;
 import Source.Loader.Executable;
@@ -173,6 +174,9 @@ final class NROExecutable : Executable {
     ProgramEntry Load(GuestMemory memory, HorizonKernel kernel) {
         Layout layout;
         layout.Argv = "\"" ~ kernel.Storage.ExposeToSDMC(path) ~ "\""; // a bit messy
+        if (nro.HasAssets && nro.RomFs.length != 0) {
+            kernel.Storage.ProgramRomFS = new MemoryStorage(nro.RomFs, path ~ " (romfs)");
+        }
         const NROData loaded = LoadNROToMemory(memory, nro, layout);
         writefln("Loaded 0x%X, 0x%X. top 0x%X", loaded.ImgBase, loaded.EntryPoint, loaded.StackTop);
 

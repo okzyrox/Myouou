@@ -217,6 +217,43 @@ final class NCAInfo {
         KeysReady = true;
     }
 
+    ubyte[16] SectionCounter(const ref NCASection section, ulong absoluteOffset) const {
+        ubyte[16] counter;
+        foreach (i; 0 .. 8) {
+            counter[i] = section.CtrUpper[7 - i];
+        }
+        const ulong block = absoluteOffset >> 4;
+        foreach (i; 0 .. 8) {
+            counter[15 - i] = cast(ubyte) (block >> (i * 8));
+        }
+        return counter;
+    }
+
+    void DecryptSection(const ref NCASection section, ulong absoluteOffset, ubyte[] data) const {
+        if (section.Encryption == NCAEncryption.None) {
+            return;
+        }
+        if (!KeysReady) {
+            throw new NCAError("NCA keys are not available: " ~ KeyError);
+        }
+        switch (section.Encryption) {
+            case NCAEncryption.AesCtr:
+                if (absoluteOffset % AesBlockSize != 0) {
+                    throw new NCAError(format("NCA section read at 0x%X is not block aligned!", absoluteOffset));
+                }
+                AesCtrCrypt(CtrKey, SectionCounter(section, absoluteOffset), data);
+                return;
+            case NCAEncryption.AesXts:
+                if ((absoluteOffset - section.Offset) % NCASectorSize != 0) {
+                    throw new NCAError(format("NCA section read at 0x%X is not sector aligned!", absoluteOffset));
+                }
+                AesXtsDecrypt(KeyArea[0] ~ KeyArea[1], data, (absoluteOffset - section.Offset) / NCASectorSize, NCASectorSize);
+                return;
+            default:
+                throw new NCAError(format("Unsupported NCA section encryption (%s)!", section.Encryption));
+        }
+    }
+
     const(ubyte)[] CtrKey() const {
         return HasRightsId ? TitleKey[] : KeyArea[2][];
     }

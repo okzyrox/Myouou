@@ -18,6 +18,7 @@ import std.path : absolutePath, baseName, buildNormalizedPath, buildPath, dirSep
 import std.uni : toLower;
 
 // Core
+import Source.FileSystem.RomStorage;
 import Source.FileSystem.HostFileSystem;
 import Source.Kernel.Result;
 import Source.Util.Logger;
@@ -94,6 +95,7 @@ immutable string[] SdCardFolders = [
 final class SwitchStorage {
     immutable string Root;
     HostFileSystem SdCard;
+    RomStorage ProgramRomFS;
 
     private HostFileSystem[BisPartitionId] partitions;
     private Logger log;

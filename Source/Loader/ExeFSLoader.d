@@ -17,6 +17,7 @@ import std.path : baseName, buildPath, dirName;
 import std.stdio;
 
 // Core
+import Source.FileSystem.RomStorage;
 import Source.Format.NPDM;
 import Source.Format.NSO;
 import Source.Kernel.Kernel;
@@ -82,6 +83,7 @@ final class ExeFSExecutable : Executable {
     private string formatExtension;
     private NPDMFile npdm;
     private ExeFSModule[] modules;
+    RomStorage RomFS;
 
     this(string folder) {
         this(new FolderSource(folder), Name, Extension);
@@ -154,6 +156,10 @@ final class ExeFSExecutable : Executable {
     ProgramEntry Load(GuestMemory memory, HorizonKernel kernel) {
         Layout layout;
         size_t stackSize = DefaultMainStackSize;
+        if (RomFS !is null) {
+            kernel.Storage.ProgramRomFS = RomFS;
+            writefln("RomFS %s (0x%X bytes).", RomFS.Label, RomFS.Size);
+        }
         if (npdm !is null) {
             if (npdm.AddressSpace != AddressSpaceType.Bits39 || !npdm.Is64Bit) {
                 // todo

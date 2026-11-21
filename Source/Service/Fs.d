@@ -14,6 +14,7 @@ module Source.Service.Fs;
 import std.algorithm : min;
 
 // Core
+import Source.FileSystem.RomStorage;
 import Source.FileSystem.HostFileSystem;
 import Source.FileSystem.Storage;
 import Source.Kernel.Ipc;
@@ -63,7 +64,7 @@ final class FileSystemProxyService : IPCService {
         Command(51, "OpenSaveDataFileSystem", &OpenSaveDataFileSystem);
         Command(52, "OpenSaveDataFileSystemBySystemSaveDataId", &OpenSaveDataFileSystem);
         Command(53, "OpenReadOnlySaveDataFileSystem", &OpenSaveDataFileSystem);
-        Stub(200, "OpenDataStorageByCurrentProcess"); // game romfs
+        Command(200, "OpenDataStorageByCurrentProcess", &OpenDataStorageByCurrentProcess);
         Command(1003, "DisableAutoSaveDataCreation", &Succeed);
         Command(1005, "GetGlobalAccessLogMode", &GetGlobalAccessLogMode);
         Command(1006, "OutputAccessLogToSdCard", &Succeed);
@@ -73,6 +74,15 @@ final class FileSystemProxyService : IPCService {
 
     override string Name() const {
         return "fsp-srv";
+    }
+
+    private void OpenDataStorageByCurrentProcess(IpcContext context) {
+        if (storage.ProgramRomFS is null) {
+            Log.Warn("OpenDataStorageByCurrentProcess: this program doesnt have any RomFS!");
+            context.Result(FsResult.TargetNotFound);
+            return;
+        }
+        context.PushInterface(new DataStorageService(storage.ProgramRomFS));
     }
 
     private void OpenSdCardFileSystem(IpcContext context) {
@@ -110,6 +120,35 @@ final class FileSystemProxyService : IPCService {
 
     private void GetGlobalAccessLogMode(IpcContext context) {
         context.Push!uint(0);
+    }
+}
+
+final class DataStorageService : IPCService {
+    private RomStorage romDataStorage;
+
+    this(RomStorage romDataStorage) {
+        this.romDataStorage = romDataStorage;
+        Command(0, "Read", &Read);
+        Command(1, "Write", (IpcContext c) => c.Result(FsResult.UnsupportedOperation));
+        Command(2, "Flush", &Succeed);
+        Command(3, "SetSize", (IpcContext c) => c.Result(FsResult.UnsupportedOperation));
+        Command(4, "GetSize", (IpcContext c) => c.Push!long(this.romDataStorage.Size));
+    }
+
+    override string Name() const {
+        return "fs::IStorage";
+    }
+
+    private void Read(IpcContext context) {
+        const long offset = context.Pop!long();
+        const long size = context.Pop!long();
+        if (offset < 0 || size < 0) {
+            context.Result(FsResult.InvalidOffset);
+            return;
+        }
+        ubyte[] data = new ubyte[min(cast(size_t) size, context.OutputSize(0))];
+        const size_t read = romDataStorage.Read(offset, data);
+        context.WriteOutput(0, data[0 .. read]);
     }
 }
 

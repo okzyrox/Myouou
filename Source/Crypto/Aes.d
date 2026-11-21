@@ -64,11 +64,36 @@ private ubyte Mul(ubyte a, ubyte b) pure nothrow @nogc @safe {
     return result;
 }
 
+private uint[256] BuildEncryptTable(uint rotation) pure nothrow @nogc @safe {
+    uint[256] table;
+    foreach (i; 0 .. 256) {
+        const ubyte value = SBox[i];
+        const uint word = (cast(uint) XTime(value) << 24) | (cast(uint) value << 16) | (cast(uint) value << 8) | cast(uint) (XTime(value) ^ value);
+        table[i] = rotation == 0 ? word : (word >> (rotation * 8)) | (word << (32 - rotation * 8));
+    }
+    return table;
+}
+
+private immutable uint[256] Te0 = BuildEncryptTable(0);
+private immutable uint[256] Te1 = BuildEncryptTable(1);
+private immutable uint[256] Te2 = BuildEncryptTable(2);
+private immutable uint[256] Te3 = BuildEncryptTable(3);
+
+private uint LoadBigEndian(const(ubyte)[] bytes, size_t offset) pure nothrow @nogc @safe {
+    return (cast(uint) bytes[offset] << 24) | (cast(uint) bytes[offset + 1] << 16) | (cast(uint) bytes[offset + 2] << 8) | bytes[offset + 3];
+}
+
+private void StoreBigEndian(ubyte[] bytes, size_t offset, uint value) pure nothrow @nogc @safe {
+    bytes[offset] = cast(ubyte) (value >> 24);
+    bytes[offset + 1] = cast(ubyte) (value >> 16);
+    bytes[offset + 2] = cast(ubyte) (value >> 8);
+    bytes[offset + 3] = cast(ubyte) value;
+}
+
 // Cipher
 struct Aes128 {
     private ubyte[176] roundKeys;
-
-    // might not be accurate for larger sections...
+    private uint[44] roundWords;
 
     this(const(ubyte)[] key) pure nothrow @nogc @safe {
         assert(key.length == AesBlockSize);
@@ -86,6 +111,9 @@ struct Aes128 {
                 roundKeys[i * 4 + j] = cast(ubyte) (roundKeys[(i - 4) * 4 + j] ^ word[j]);
             }
         }
+        foreach (i; 0 .. 44) {
+            roundWords[i] = LoadBigEndian(roundKeys[], i * 4);
+        }
     }
 
     private void AddRoundKey(ubyte[] state, size_t round) const pure nothrow @nogc @safe {
@@ -96,29 +124,24 @@ struct Aes128 {
 
     void EncryptBlock(ubyte[] state) const pure nothrow @nogc @safe {
         assert(state.length == AesBlockSize);
-        AddRoundKey(state, 0);
-        foreach (round; 1 .. 11) {
-            ubyte[16] shifted;
-            foreach (row; 0 .. 4) {
-                foreach (column; 0 .. 4) {
-                    shifted[row + 4 * column] = SBox[state[row + 4 * ((column + row) % 4)]];
-                }
-            }
-            if (round != 10) {
-                foreach (column; 0 .. 4) {
-                    const ubyte a0 = shifted[4 * column];
-                    const ubyte a1 = shifted[4 * column + 1];
-                    const ubyte a2 = shifted[4 * column + 2];
-                    const ubyte a3 = shifted[4 * column + 3];
-                    shifted[4 * column] = cast(ubyte) (XTime(a0) ^ XTime(a1) ^ a1 ^ a2 ^ a3);
-                    shifted[4 * column + 1] = cast(ubyte) (a0 ^ XTime(a1) ^ XTime(a2) ^ a2 ^ a3);
-                    shifted[4 * column + 2] = cast(ubyte) (a0 ^ a1 ^ XTime(a2) ^ XTime(a3) ^ a3);
-                    shifted[4 * column + 3] = cast(ubyte) (XTime(a0) ^ a0 ^ a1 ^ a2 ^ XTime(a3));
-                }
-            }
-            state[] = shifted[];
-            AddRoundKey(state, round);
+        uint s0 = LoadBigEndian(state, 0) ^ roundWords[0];
+        uint s1 = LoadBigEndian(state, 4) ^ roundWords[1];
+        uint s2 = LoadBigEndian(state, 8) ^ roundWords[2];
+        uint s3 = LoadBigEndian(state, 12) ^ roundWords[3];
+        foreach (round; 1 .. 10) {
+            const uint t0 = Te0[s0 >> 24] ^ Te1[(s1 >> 16) & 0xFF] ^ Te2[(s2 >> 8) & 0xFF] ^ Te3[s3 & 0xFF] ^ roundWords[round * 4];
+            const uint t1 = Te0[s1 >> 24] ^ Te1[(s2 >> 16) & 0xFF] ^ Te2[(s3 >> 8) & 0xFF] ^ Te3[s0 & 0xFF] ^ roundWords[round * 4 + 1];
+            const uint t2 = Te0[s2 >> 24] ^ Te1[(s3 >> 16) & 0xFF] ^ Te2[(s0 >> 8) & 0xFF] ^ Te3[s1 & 0xFF] ^ roundWords[round * 4 + 2];
+            const uint t3 = Te0[s3 >> 24] ^ Te1[(s0 >> 16) & 0xFF] ^ Te2[(s1 >> 8) & 0xFF] ^ Te3[s2 & 0xFF] ^ roundWords[round * 4 + 3];
+            s0 = t0;
+            s1 = t1;
+            s2 = t2;
+            s3 = t3;
         }
+        StoreBigEndian(state, 0, ((cast(uint) SBox[s0 >> 24] << 24) | (cast(uint) SBox[(s1 >> 16) & 0xFF] << 16) | (cast(uint) SBox[(s2 >> 8) & 0xFF] << 8) | SBox[s3 & 0xFF]) ^ roundWords[40]);
+        StoreBigEndian(state, 4, ((cast(uint) SBox[s1 >> 24] << 24) | (cast(uint) SBox[(s2 >> 16) & 0xFF] << 16) | (cast(uint) SBox[(s3 >> 8) & 0xFF] << 8) | SBox[s0 & 0xFF]) ^ roundWords[41]);
+        StoreBigEndian(state, 8, ((cast(uint) SBox[s2 >> 24] << 24) | (cast(uint) SBox[(s3 >> 16) & 0xFF] << 16) | (cast(uint) SBox[(s0 >> 8) & 0xFF] << 8) | SBox[s1 & 0xFF]) ^ roundWords[42]);
+        StoreBigEndian(state, 12, ((cast(uint) SBox[s3 >> 24] << 24) | (cast(uint) SBox[(s0 >> 16) & 0xFF] << 16) | (cast(uint) SBox[(s1 >> 8) & 0xFF] << 8) | SBox[s2 & 0xFF]) ^ roundWords[43]);
     }
 
     void DecryptBlock(ubyte[] state) const pure nothrow @nogc @safe {
