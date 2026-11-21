@@ -30,6 +30,7 @@ struct ProgramEntry {
 
 interface Executable {
     string FormatName() const;
+    string FormatExtension() const;
     string TitleKey() const;
     void Describe();
     ProgramEntry Load(GuestMemory memory, HorizonKernel kernel);

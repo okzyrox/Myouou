@@ -23,16 +23,18 @@ import Source.Gpu.Renderer;
 import Source.Gpu.Shader.ShaderCache;
 import Source.Kernel.Kernel;
 import Source.Kernel.Svc;
-import Source.Loader.Executable;
-import Source.Loader.NROLoader;
 import Source.Memory.Guest;
 import Source.Wrapper.Dynarmic;
 import Source.Wrapper.DynarmicJit;
 
+// Loaders
+import Source.Loader.Executable;
+import Source.Loader.NROLoader;
+
 // Types
 enum size_t HeaderProbeSize = 0x1000; // should be enough for most formats?
 immutable ExecutableFormat[] ExecutableFormats = [
-    ExecutableFormat("NRO", &NROExecutable.Matches, &NROExecutable.Open),
+    ExecutableFormat(NROExecutable.Name, &NROExecutable.Matches, &NROExecutable.Open),
 ];
 
 // Utils
@@ -49,7 +51,7 @@ void DebugRegs(DynarmicJit jit) {
 
 string ResolveExecutablePath(string path) {
     // Only for installed homebrew, just as a nice qol.
-    if (exists(path) || extension(path).toLower != ".nro") {
+    if (exists(path) || extension(path).toLower != NROExecutable.Extension) {
         return path;
     }
     const string installed = buildPath(getcwd(), StorageFolder, HomebrewFolder, path);
@@ -89,7 +91,7 @@ int RunFile(string path) {
         writefln("%s", error.msg);
         return 1;
     }
-    writefln("File Format: %s", executable.FormatName);
+    writefln("File Format: %s", executable.FormatName());
     executable.Describe();
 
     GuestMemory memory = new GuestMemory();

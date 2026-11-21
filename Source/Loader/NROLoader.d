@@ -137,8 +137,15 @@ final class NROExecutable : Executable {
         return new NROExecutable(path);
     }
 
+    enum string Name = "NRO";
+    enum string Extension = ".nro";
+
     string FormatName() const {
-        return "NRO";
+        return Name;
+    }
+
+    string FormatExtension() const {
+        return Extension;
     }
 
     string TitleKey() const {
