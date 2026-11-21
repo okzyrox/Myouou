@@ -11,7 +11,7 @@
 module Source.Emulator.Execution;
 
 // Std
-import std.file : exists, getcwd, isFile;
+import std.file : exists, getcwd, isDir, isFile;
 import std.path : buildPath, extension;
 import std.stdio;
 import std.uni : toLower;
@@ -28,6 +28,7 @@ import Source.Wrapper.Dynarmic;
 import Source.Wrapper.DynarmicJit;
 
 // Loaders
+import Source.Loader.ExeFSLoader;
 import Source.Loader.Executable;
 import Source.Loader.NROLoader;
 import Source.Loader.NSOLoader;
@@ -37,6 +38,7 @@ enum size_t HeaderProbeSize = 0x1000; // should be enough for most formats?
 immutable ExecutableFormat[] ExecutableFormats = [
     ExecutableFormat(NROExecutable.Name, &NROExecutable.Matches, &NROExecutable.Open),
     ExecutableFormat(NSOExecutable.Name, &NSOExecutable.Matches, &NSOExecutable.Open),
+    ExecutableFormat(ExeFSExecutable.Name, &ExeFSExecutable.Matches, &ExeFSExecutable.Open),
 ];
 
 // Utils
@@ -64,6 +66,12 @@ string ResolveExecutablePath(string path) {
 }
 
 Executable OpenExecutable(string path) {
+    if (isDir(path)) {
+        if (ExeFSExecutable.MatchesFolder(path)) {
+            return ExeFSExecutable.Open(path);
+        }
+        throw new ExecutableError("Folder is not an ExeFS (no main module): " ~ path);
+    }
     File file = File(path, "rb");
     ubyte[] header = new ubyte[HeaderProbeSize];
     header = file.rawRead(header);
@@ -81,7 +89,7 @@ Executable OpenExecutable(string path) {
 // Main
 int RunFile(string path) {
     path = ResolveExecutablePath(path);
-    if (!exists(path) || !isFile(path)) {
+    if (!exists(path)) {
         writefln("File not found: %s", path);
         return 1;
     }

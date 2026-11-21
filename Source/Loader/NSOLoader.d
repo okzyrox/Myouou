@@ -22,7 +22,7 @@ import Source.Loader.NROLoader : Layout;
 import Source.Memory.Guest;
 
 // Utils
-private size_t AlignPage(size_t value) {
+size_t AlignPage(size_t value) {
     return (value + GuestPageSize - 1) & ~(GuestPageSize - 1);
 }
 
@@ -36,8 +36,14 @@ private void MapSegment(GuestMemory memory, NSOFile nso, NSOSegmentKind kind, ul
     memory.WriteBytes(base + segment.MemoryOffset, nso.Segment(kind));
 }
 
+size_t MapNSOModule(GuestMemory memory, NSOFile nso, ulong base, string name) {
+    MapSegment(memory, nso, NSOSegmentKind.Text, base, 0, MemoryPermission.ReadExecute, name ~ ".text", MemoryType.Code);
+    MapSegment(memory, nso, NSOSegmentKind.Ro, base, 0, MemoryPermission.Read, name ~ ".rodata", MemoryType.Code);
+    MapSegment(memory, nso, NSOSegmentKind.Data, base, nso.BssSize, MemoryPermission.ReadWrite, name ~ ".data", MemoryType.CodeData);
+    return nso.ImageSize;
+}
+
 // Class
-// todo: a single module only, no rtld/subsdk/sdk or npdm process settings yet
 final class NSOExecutable : Executable {
     private string path;
     private NSOFile nso;
@@ -87,9 +93,7 @@ final class NSOExecutable : Executable {
     ProgramEntry Load(GuestMemory memory, HorizonKernel kernel) {
         Layout layout;
         const ulong base = layout.ImgBase;
-        MapSegment(memory, nso, NSOSegmentKind.Text, base, 0, MemoryPermission.ReadExecute, ".text", MemoryType.Code);
-        MapSegment(memory, nso, NSOSegmentKind.Ro, base, 0, MemoryPermission.Read, ".rodata", MemoryType.Code);
-        MapSegment(memory, nso, NSOSegmentKind.Data, base, nso.BssSize, MemoryPermission.ReadWrite, ".data", MemoryType.CodeData);
+        MapNSOModule(memory, nso, base, "main");
         memory.Map(layout.StackBase, layout.StackSize, MemoryPermission.ReadWrite, "Stack", MemoryType.Stack);
         memory.Map(layout.TlsBase, GuestPageSize, MemoryPermission.ReadWrite, "Tls", MemoryType.ThreadLocal);
         writefln("Loaded 0x%X, 0x%X. top 0x%X", base, base + nso.Layout(NSOSegmentKind.Text).MemoryOffset, layout.StackBase + layout.StackSize);
