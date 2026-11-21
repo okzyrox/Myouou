@@ -104,6 +104,8 @@ enum SpvOp : ushort {
     BitwiseXor = 198,
     BitwiseAnd = 199,
     Not = 200,
+    DPdxFine = 210,
+    DPdyFine = 211,
     LoopMerge = 246,
     SelectionMerge = 247,
     Label = 248,
@@ -161,6 +163,7 @@ enum uint SpvImageOperandsLod = 0x2;
 enum uint SpvMagic = 0x0723_0203;
 enum uint SpvVersion10 = 0x0001_0000;
 enum uint SpvCapabilityShader = 1;
+enum uint SpvCapabilityDerivativeControl = 51;
 enum uint SpvAddressingLogical = 0;
 enum uint SpvMemoryModelGlsl450 = 1;
 
@@ -325,6 +328,15 @@ final class SpirvBuilder {
 
     void Name(uint target, string name) {
         Emit(debugNames, SpvOp.Name, [target] ~ StringWords(name));
+    }
+
+    void Capability(uint capability) {
+        const string key = format("capability%d", capability);
+        if (key in cache) {
+            return;
+        }
+        cache[key] = 0;
+        Emit(capabilities, SpvOp.Capability, [capability]);
     }
 
     void EntryPoint(SpvExecutionModel model, uint func, string name, const(uint)[] interfaceIds) {

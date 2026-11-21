@@ -651,6 +651,56 @@ private final class ShaderTranslator {
     }
 
     // Instruction translation
+    // Quads
+    private uint QuadParity(uint component) {
+        const uint coordinate = b.Load(b.Float, Component(FragCoord(), SpvStorage.Input, component));
+        const uint whole = b.Value(SpvOp.ConvertFToU, b.Uint, [coordinate]);
+        return b.Value(SpvOp.BitwiseAnd, b.Uint, [whole, b.ConstantUint(1)]);
+    }
+
+    private uint QuadLane() {
+        const uint vertical = b.Value(SpvOp.ShiftLeftLogical, b.Uint, [QuadParity(1), b.ConstantUint(1)]);
+        return b.Value(SpvOp.BitwiseOr, b.Uint, [QuadParity(0), vertical]);
+    }
+
+    private uint QuadNeighbour(uint value, uint component, SpvOp derivative) {
+        const uint delta = b.Value(derivative, b.Float, [value]);
+        const uint odd = b.Value(SpvOp.IEqual, b.Bool, [QuadParity(component), b.ConstantUint(1)]);
+        const uint before = b.Value(SpvOp.FSub, b.Float, [value, delta]);
+        const uint after = b.Value(SpvOp.FAdd, b.Float, [value, delta]);
+        return b.Value(SpvOp.Select, b.Float, [odd, before, after]);
+    }
+
+    private void EmitShfl(const ref Instruction instruction) {
+        const uint lanes = cast(uint) instruction.Bits(20, 5);
+        if (stage != ShaderStageKind.Fragment || !instruction.Bit(28) || instruction.Bits(30, 2) != 3 || lanes == 0 || lanes > 3) {
+            Fail("Unsupported SHFL form (%016X) at 0x%X!", instruction.Raw, instruction.Address);
+        }
+        b.Capability(SpvCapabilityDerivativeControl);
+        uint value = RegF(instruction.SrcA);
+        if ((lanes & 1) != 0) {
+            value = QuadNeighbour(value, 0, SpvOp.DPdxFine);
+        }
+        if ((lanes & 2) != 0) {
+            value = QuadNeighbour(value, 1, SpvOp.DPdyFine);
+        }
+        SetRegF(instruction.Dest, value);
+        SetPred(cast(uint) instruction.Bits(48, 3), b.ConstantBool(true));
+    }
+
+    private uint QuadSwizzleAdd(uint a, uint bValue, uint swizzle) {
+        const uint reversed = b.Value(SpvOp.ISub, b.Uint, [b.ConstantUint(3), QuadLane()]);
+        const uint shift = b.Value(SpvOp.ShiftLeftLogical, b.Uint, [reversed, b.ConstantUint(1)]);
+        const uint shifted = b.Value(SpvOp.ShiftRightLogical, b.Uint, [b.ConstantUint(swizzle), shift]);
+        const uint mode = b.Value(SpvOp.BitwiseAnd, b.Uint, [shifted, b.ConstantUint(3)]);
+        const uint sum = b.Value(SpvOp.FAdd, b.Float, [a, bValue]);
+        const uint reverse = b.Value(SpvOp.FSub, b.Float, [bValue, a]);
+        const uint difference = b.Value(SpvOp.FSub, b.Float, [a, bValue]);
+        uint result = b.Value(SpvOp.Select, b.Float, [b.Value(SpvOp.IEqual, b.Bool, [mode, b.ConstantUint(2)]), difference, bValue]);
+        result = b.Value(SpvOp.Select, b.Float, [b.Value(SpvOp.IEqual, b.Bool, [mode, b.ConstantUint(1)]), reverse, result]);
+        return b.Value(SpvOp.Select, b.Float, [b.Value(SpvOp.IEqual, b.Bool, [mode, b.ConstantUint(0)]), sum, result]);
+    }
+
     private void Emit(const ref Instruction instruction) {
         switch (instruction.Op) {
             // below is really messy
@@ -907,6 +957,15 @@ private final class ShaderTranslator {
             case Opcode.S2r:
                 SetReg(instruction.Dest, b.ConstantUint(0));
                 return;
+            case Opcode.Shfl:
+                EmitShfl(instruction);
+                return;
+            case Opcode.Fswzadd: {
+                const uint a = RegF(instruction.SrcA);
+                const uint bValue = RegF(instruction.SrcB);
+                SetRegF(instruction.Dest, QuadSwizzleAdd(a, bValue, cast(uint) instruction.Bits(28, 8)));
+                return;
+            }
 
             case Opcode.Texs:
                 EmitTexs(instruction);
