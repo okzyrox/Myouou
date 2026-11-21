@@ -271,7 +271,11 @@ final class HostDisplay {
                 ShouldQuit = true;
             }
             else if (event.type == SDL_EVENT_KEY_DOWN) {
-                Input.HandleScancode(event.key.scancode);
+                if (event.key.scancode == SDL_SCANCODE_ESCAPE) {
+                    ShouldQuit = true;
+                } else {
+                    Input.HandleScancode(event.key.scancode);
+                }
             }
         }
         if (OnInputCallback !is null) {
