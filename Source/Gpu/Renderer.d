@@ -32,6 +32,7 @@ import Source.Util.Logger;
 enum uint MaxVertexAttributes = 32;
 enum uint MaxVertexArrays = 32;
 enum size_t MaxGuestBufferSize = 64 * 1024 * 1024;
+enum size_t ZeroStrideVertexBytes = 0x100;
 enum size_t MaxShaderBytes = 0x10000;
 
 enum GuestTopology : uint {
@@ -940,42 +941,86 @@ final class HostRenderer : GpuRenderer {
             // cause this is expensive..
         SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(Device);
         SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commands);
-        bool Abort() {
+        
+        bool EndDraw() {
             SDL_EndGPUCopyPass(copy);
             SDL_CancelGPUCommandBuffer(commands);
             return false;
         }
 
+        uint[] indices;
+        uint lowest = first;
+        uint highest = first + count - 1;
+        if (indexed || fan) {
+            indices = DrawIndices(engine, first, count, indexed, fan);
+            if (indices is null)
+                return EndDraw();
+            if (indices.length == 0) {
+                EndDraw();
+                return true;
+            }
+            lowest = uint.max;
+            highest = 0;
+            foreach (index; indices) {
+                lowest = index < lowest ? index : lowest;
+                highest = index > highest ? index : highest;
+            }
+            foreach (ref index; indices) {
+                index -= lowest;
+            }
+        }
+
         SDL_GPUBufferBinding[MaxVertexArrays] vertexBindings;
+        ulong[MaxVertexArrays] uploadedStarts;
+        size_t[MaxVertexArrays] uploadedSizes;
         foreach (slot; 0 .. layout.BufferCount) {
             const uint guestArray = layout.GuestArrays[slot];
             const ulong start = engine.Address(Maxwell3DMethod.VertexArrays + guestArray * 4 + 1);
-            const ulong limit = engine.Address(Maxwell3DMethod.VertexArrayLimits + guestArray * 2);
-            const ubyte[] data = ReadGuest(start, limit >= start ? cast(size_t) (limit - start + 1) : 0);
+            const ulong end = engine.Address(Maxwell3DMethod.VertexArrayLimits + guestArray * 2) + 1;
+            const size_t stride = layout.Buffers[slot].pitch;
+            const ulong begin = start + cast(ulong) lowest * stride;
+            if (end <= begin) {
+                FailOnce(format("va%d", guestArray), "Vertex array %d has bad range 0x%X..0x%X", guestArray, start, end);
+                return EndDraw();
+            }
+            size_t size = stride == 0 ? ZeroStrideVertexBytes : (cast(size_t) (highest - lowest) + 1) * stride;
+            if (size > end - begin) {
+                size = cast(size_t) (end - begin);
+            }
+
+            foreach (previous; 0 .. slot) {
+                if (uploadedStarts[previous] == begin && uploadedSizes[previous] == size) {
+                    vertexBindings[slot].buffer = vertexBindings[previous].buffer;
+                    break;
+                }
+            }
+            uploadedStarts[slot] = begin;
+            uploadedSizes[slot] = size;
+            if (vertexBindings[slot].buffer !is null) {
+                continue;
+            }
+            const ubyte[] data = ReadGuest(begin, size);
             if (data is null) {
-                FailOnce(format("va%d", guestArray), "Vertex array %d has bad range 0x%X..0x%X", guestArray, start, limit);
-                return Abort();
+                FailOnce(format("va%d", guestArray), "Vertex array %d has bad range 0x%X..0x%X", guestArray, start, end);
+                return EndDraw();
             }
             vertexBindings[slot].buffer = UploadBuffer(copy, data, SDL_GPU_BUFFERUSAGE_VERTEX, uploads);
             if (vertexBindings[slot].buffer is null)
-                return Abort();
+                return EndDraw();
         }
 
         SDL_GPUBuffer*[] vertexStorage;
         SDL_GPUBuffer*[] fragmentStorage;
         if (!UploadConstBuffers(engine, ShaderStage.VertexB, vertex.Translation.ConstBuffers, copy, uploads, vertexStorage)
             || !UploadConstBuffers(engine, ShaderStage.Fragment, fragment.Translation.ConstBuffers, copy, uploads, fragmentStorage))
-            return Abort();
+            return EndDraw();
 
         SDL_GPUBuffer* indexBuffer;
         uint drawCount = count;
-        if (indexed || fan) {
-            const uint[] indices = DrawIndices(engine, first, count, indexed, fan);
-            if (indices is null)
-                return Abort();
+        if (indices.length != 0) {
             indexBuffer = UploadBuffer(copy, cast(const(ubyte)[]) indices, SDL_GPU_BUFFERUSAGE_INDEX, uploads);
             if (indexBuffer is null)
-                return Abort();
+                return EndDraw();
             drawCount = cast(uint) indices.length;
         }
         SDL_EndGPUCopyPass(copy);
@@ -1020,7 +1065,7 @@ final class HostRenderer : GpuRenderer {
             SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
             SDL_DrawGPUIndexedPrimitives(pass, drawCount, 1, 0, 0, 0);
         } else {
-            SDL_DrawGPUPrimitives(pass, drawCount, 1, first, 0);
+            SDL_DrawGPUPrimitives(pass, drawCount, 1, 0, 0);
         }
         SDL_EndGPURenderPass(pass);
         SDL_SubmitGPUCommandBuffer(commands);
