@@ -140,7 +140,7 @@ final class HidService : IPCService {
         Stub(128, "SetNpadHandheldActivationMode");
         Stub(200, "GetVibrationDeviceInfo");
         Stub(201, "SendVibrationValue");
-        Stub(203, "CreateActiveVibrationDeviceList");
+        Command(203, "CreateActiveVibrationDeviceList", (IpcContext c) => c.PushInterface(new ActiveVibrationDeviceListService()));
         Stub(206, "SendVibrationValues");
         Stub(1000, "SetNpadCommunicationMode");
     }
@@ -162,5 +162,15 @@ final class AppletResource : IPCService {
 
     override string Name() const {
         return "hid::IAppletResource";
+    }
+}
+
+final class ActiveVibrationDeviceListService : IPCService {
+    this() {
+        Stub(0, "ActivateVibrationDevice");
+    }
+
+    override string Name() const {
+        return "hid::IActiveVibrationDeviceList";
     }
 }
