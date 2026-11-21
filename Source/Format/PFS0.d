@@ -113,7 +113,21 @@ final class PFS0Archive {
         if (entry is null) {
             throw new PFS0FileError(format("PFS0 has no file '%s'!", name));
         }
-        ubyte[] data = new ubyte[cast(size_t) entry.Size];
+        return ReadRange(name, 0, cast(size_t) entry.Size);
+    }
+
+    ubyte[] ReadRange(string name, ulong offset, size_t length) const {
+        const(PFS0FileEntry)* entry = Find(name);
+        if (entry is null) {
+            throw new PFS0FileError(format("PFS0 has no file '%s'!", name));
+        }
+        if (offset > entry.Size) {
+            throw new PFS0FileError(format("PFS0 read at 0x%X is past the end of '%s'!", offset, name));
+        }
+        if (length > entry.Size - offset) {
+            length = cast(size_t) (entry.Size - offset);
+        }
+        ubyte[] data = new ubyte[length];
         if (data.length == 0) {
             return data;
         }
@@ -121,7 +135,7 @@ final class PFS0Archive {
         scope (exit) {
             file.close();
         }
-        file.seek(entry.Offset);
+        file.seek(entry.Offset + offset);
         if (file.rawRead(data).length != data.length) {
             throw new PFS0FileError(format("PFS0 file '%s' is truncated...", name));
         }
