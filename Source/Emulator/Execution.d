@@ -32,6 +32,7 @@ import Source.Loader.ExeFSLoader;
 import Source.Loader.Executable;
 import Source.Loader.NROLoader;
 import Source.Loader.NSOLoader;
+import Source.Loader.NSPLoader;
 
 // Types
 enum size_t HeaderProbeSize = 0x1000; // should be enough for most formats?
@@ -39,6 +40,7 @@ immutable ExecutableFormat[] ExecutableFormats = [
     ExecutableFormat(NROExecutable.Name, &NROExecutable.Matches, &NROExecutable.Open),
     ExecutableFormat(NSOExecutable.Name, &NSOExecutable.Matches, &NSOExecutable.Open),
     ExecutableFormat(ExeFSExecutable.Name, &ExeFSExecutable.Matches, &ExeFSExecutable.Open),
+    ExecutableFormat(NSPExecutable.Name, &NSPExecutable.Matches, &NSPExecutable.Open),
 ];
 
 // Utils
