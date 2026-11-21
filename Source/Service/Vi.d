@@ -105,9 +105,10 @@ private void WriteNativeWindow(IpcContext context, BufferQueue queue) {
     NativeWindow window;
     window.BinderId = queue.BinderId;
     ParcelWriter parcel;
-    parcel.WriteData((cast(const(ubyte)*) &window)[0 .. window.sizeof]);
-    context.WriteOutput(0, parcel.Serialize());
-    context.Push!ulong(ParcelHeaderSize + window.sizeof);
+    parcel.WriteObject((cast(const(ubyte)*) &window)[0 .. window.sizeof]);
+    const ubyte[] serialized = parcel.Serialize();
+    context.WriteOutput(0, serialized);
+    context.Push!ulong(serialized.length);
 }
 
 // Services
