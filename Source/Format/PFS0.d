@@ -51,6 +51,7 @@ class PFS0FileError : Exception {
 final class PFS0Archive {
     immutable string Path;
     PFS0FileEntry[] Files;
+    private const(ubyte)[] memory;
 
     static PFS0Archive Open(string path) {
         return new PFS0Archive(path);
@@ -62,10 +63,27 @@ final class PFS0Archive {
         scope (exit) {
             file.close();
         }
-        const ulong fileSize = file.size;
+        Parse(file.size, (ulong offset, ubyte[] destination) {
+            file.seek(offset);
+            return file.rawRead(destination).length == destination.length;
+        });
+    }
 
+    this(const(ubyte)[] data, string label) {
+        Path = label;
+        memory = data;
+        Parse(data.length, (ulong offset, ubyte[] destination) {
+            if (offset > memory.length || destination.length > memory.length - offset) {
+                return false;
+            }
+            destination[] = memory[cast(size_t) offset .. cast(size_t) offset + destination.length];
+            return true;
+        });
+    }
+
+    private void Parse(ulong fileSize, scope bool delegate(ulong offset, ubyte[] destination) readAt) {
         PFS0Header header;
-        if (file.rawRead((&header)[0 .. 1]).length != 1 || header.Magic != PFS0Magic) {
+        if (!readAt(0, (cast(ubyte*) &header)[0 .. PFS0Header.sizeof]) || header.Magic != PFS0Magic) {
             throw new PFS0FileError(format("Invalid PFS0! Wrong sig like 0x%08X", header.Magic));
         }
         if (header.FileCount > MaxPFS0Files || header.StringTableSize > MaxPFS0StringTable) {
@@ -74,7 +92,9 @@ final class PFS0Archive {
 
         PFS0Entry[] entries = new PFS0Entry[header.FileCount];
         ubyte[] strings = new ubyte[header.StringTableSize];
-        if ((entries.length != 0 && file.rawRead(entries).length != entries.length) || (strings.length != 0 && file.rawRead(strings).length != strings.length)) {
+        const ulong entriesAt = PFS0Header.sizeof;
+        const ulong stringsAt = entriesAt + entries.length * PFS0Entry.sizeof;
+        if ((entries.length != 0 && !readAt(entriesAt, cast(ubyte[]) entries)) || (strings.length != 0 && !readAt(stringsAt, strings))) {
             throw new PFS0FileError("PFS0 entry / string table is truncated!");
         }
 
@@ -129,6 +149,10 @@ final class PFS0Archive {
         }
         ubyte[] data = new ubyte[length];
         if (data.length == 0) {
+            return data;
+        }
+        if (memory !is null) { // temp
+            data[] = memory[cast(size_t) (entry.Offset + offset) .. cast(size_t) (entry.Offset + offset) + length];
             return data;
         }
         File file = File(Path, "rb");
