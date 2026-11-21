@@ -45,6 +45,7 @@ import Source.Service.Psm;
 import Source.Service.Service;
 import Source.Service.Set;
 import Source.Service.Sm;
+import Source.Service.Ssl;
 import Source.Service.Time;
 import Source.Service.Vi;
 
@@ -200,6 +201,7 @@ final class HorizonKernel {
         foreach (name; ["apm", "apm:am", "apm:p"])
             Services.Register(name, ApmFactory(name));
         Services.Register("psm", () => cast(IPCService) new PsmService());
+        Services.Register("ssl", () => cast(IPCService) new SslService());
         Services.Register("hid", () => cast(IPCService) new HidService(Hid));
         foreach (name; ["nvdrv", "nvdrv:a", "nvdrv:s", "nvdrv:t"])
             Services.Register(name, NvdrvFactory(name));
