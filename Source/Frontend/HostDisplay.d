@@ -38,6 +38,12 @@ uint BytesPerPixel(GuestPixelFormat format) pure nothrow @nogc @safe {
     }
 }
 
+enum PresentTransform : uint {
+    None = 0,
+    FlipHorizontal = 1,
+    FlipVertical = 2,
+}
+
 struct HostSurface {
     SDL_GPUTexture* Texture;
     uint Width;
@@ -171,7 +177,7 @@ final class HostDisplay {
         return true;
     }
 
-    void Present(const(ubyte)[] pixels, int width, int height, int pitch, GuestPixelFormat format) {
+    void Present(const(ubyte)[] pixels, int width, int height, int pitch, GuestPixelFormat format, uint transform = PresentTransform.None) {
         if (!GetOrInit(width, height)) {
             return;
         }
@@ -210,18 +216,18 @@ final class HostDisplay {
             return;
         }
         UploadTexture(frameTexture, data[0 .. needed], width, height, pixelsPerRow);
-        PresentTexture(frameTexture, width, height);
+        PresentTexture(frameTexture, width, height, transform);
     }
 
-    bool PresentGuestSurface(ulong address) {
+    bool PresentGuestSurface(ulong address, uint transform = PresentTransform.None) {
         HostSurface surface;
         if (FindHostSurface is null || !FindHostSurface(address, surface))
             return false;
-        PresentTexture(surface.Texture, surface.Width, surface.Height);
+        PresentTexture(surface.Texture, surface.Width, surface.Height, transform);
         return true;
     }
 
-    void PresentTexture(SDL_GPUTexture* texture, uint width, uint height) {
+    void PresentTexture(SDL_GPUTexture* texture, uint width, uint height, uint transform = PresentTransform.None) {
         SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(device);
         SDL_GPUTexture* swapchain;
         uint swapWidth;
@@ -248,6 +254,7 @@ final class HostDisplay {
         blit.loadOp = SDL_GPU_LOADOP_CLEAR;
         blit.clearColour = SDL_FColor(0, 0, 0, 1);
         blit.filter = SDL_GPU_FILTER_NEAREST;
+        blit.flipMode = cast(SDL_FlipMode) (((transform & PresentTransform.FlipHorizontal) ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE) | ((transform & PresentTransform.FlipVertical) ? SDL_FLIP_VERTICAL : SDL_FLIP_NONE));
         SDL_BlitGPUTexture(commands, &blit);
         SDL_SubmitGPUCommandBuffer(commands);
         frameCount++;

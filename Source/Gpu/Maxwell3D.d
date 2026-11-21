@@ -23,6 +23,7 @@ enum uint RenderTargetCount = 8;
 enum uint ShaderStageCount = 6;
 enum uint ConstBufferStageCount = 5;
 enum uint ConstBuffersPerStage = 18;
+enum uint DefaultColorMask = 0x1111;
 
 enum Maxwell3DMethod : uint {
     MacroUploadAddress = 0x45,
@@ -104,6 +105,7 @@ enum Maxwell3DMethod : uint {
     IndependentBlend = 0x780,
     VertexArrayLimits = 0x7C0,
     ShaderStages = 0x800,
+    Firmware4 = 0x8C4,
     ConstBufferSize = 0x8E0,
     ConstBufferAddressHigh = 0x8E1,
     ConstBufferAddressLow = 0x8E2,
@@ -113,6 +115,7 @@ enum Maxwell3DMethod : uint {
     ConstBufferBind = 0x904,
     ConstBufferBindEnd = 0x92C,
     TexConstBufferIndex = 0x982,
+    ShadowScratch = 0xD00,
     MacroStart = 0xE00,
 }
 
@@ -235,6 +238,11 @@ final class Maxwell3D : GpuEngine, MacroHost {
     this(Gpu gpu) {
         super(gpu, "Maxwell3D", Maxwell3DRegisterCount);
         Macros = new MacroEngine(this);
+        
+        // todo: handle other defaults? if any
+        foreach (i; 0 .. RenderTargetCount) {
+            Registers[Maxwell3DMethod.ColorMask + i] = DefaultColorMask;
+        }
     }
 
     uint ReadRegister(uint method) {
@@ -283,6 +291,10 @@ final class Maxwell3D : GpuEngine, MacroHost {
                 if ((argument & (1 << 16)) != 0)
                     gpu.IncrementSyncpoint(argument & 0xFFFF);
                 break;
+            // ?? seems to be fine with just a completion report stub
+            case Maxwell3DMethod.Firmware4:
+                Registers[Maxwell3DMethod.ShadowScratch] = 1;
+                break;
             case Maxwell3DMethod.ClearSurface:
                 Clear(argument);
                 break;
@@ -311,6 +323,9 @@ final class Maxwell3D : GpuEngine, MacroHost {
     }
 
     bool ShaderEnabled(ShaderStage stage) const {
+        if (stage == ShaderStage.VertexB) {
+            return true;
+        }
         return (Registers[Maxwell3DMethod.ShaderStages + stage * 0x10] & 1) != 0;
     }
 

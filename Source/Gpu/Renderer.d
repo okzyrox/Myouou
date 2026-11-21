@@ -309,6 +309,7 @@ final class HostRenderer : GpuRenderer {
 
     private bool FindSurface(ulong address, out HostSurface surface) {
         Flush();
+        textureCache.NewFrame();
         RenderTargetTexture* target = address in targets;
         if (target is null)
             return false;

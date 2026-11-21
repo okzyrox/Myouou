@@ -52,6 +52,7 @@ enum NvSurfaceLayout : uint {
 
 enum size_t MaxBufferSlots = 64;
 enum size_t MultiFenceSize = 0x24;
+enum size_t QueueInputTransformOffset = 0x20;
 
 struct QueueBufferOutput {
     uint Width;
@@ -207,8 +208,10 @@ final class BufferQueue {
         if (!ValidSlot(slot)) {
             return -22;
         }
+        const(ubyte)[] queued = input.ReadFlattenedObject();
+        const uint transform = queued.length >= QueueInputTransformOffset + uint.sizeof ? *cast(const(uint)*) (queued.ptr + QueueInputTransformOffset) : 0;
         slots[slot].State = BufferSlotState.Queued;
-        Present(slots[slot]);
+        Present(slots[slot], transform);
         slots[slot].State = BufferSlotState.Free;
         BufferEvent.Signal();
         vsyncEvent.Signal();
@@ -269,7 +272,7 @@ final class BufferQueue {
         return 0;
     }
 
-    private void Present(ref BufferSlot slot) {
+    private void Present(ref BufferSlot slot, uint transform) {
         const GraphicBufferInfo info = slot.Info;
         NvMapObject* map = nv.Map.FromId(info.NvMapId);
         if (map is null || !map.Allocated) {
@@ -277,7 +280,7 @@ final class BufferQueue {
             return;
         }
 
-        if (display.PresentGuestSurface(map.Address + info.Offset))
+        if (display.PresentGuestSurface(map.Address + info.Offset, transform))
             return;
 
         const uint width = info.PlaneWidth != 0 ? info.PlaneWidth : info.Width;
@@ -298,9 +301,9 @@ final class BufferQueue {
             // deswizzle GOBs for the display
             // using sdl3 but might change out for native ogl/vk later
             BlockLinearDeswizzle(surface, frame, rowBytes, height, pitch, info.BlockHeightLog2);
-            display.Present(frame, width, height, cast(int) rowBytes, info.Format);
+            display.Present(frame, width, height, cast(int) rowBytes, info.Format, transform);
         } else {
-            display.Present(surface, width, height, cast(int) pitch, info.Format);
+            display.Present(surface, width, height, cast(int) pitch, info.Format, transform);
         }
     }
 }
