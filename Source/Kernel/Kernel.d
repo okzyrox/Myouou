@@ -32,6 +32,7 @@ import Source.Wrapper.DynarmicJit;
 
 // Services
 import Source.Service.Acc;
+import Source.Service.Aoc;
 import Source.Service.Am;
 import Source.Service.Audio;
 import Source.Service.AudioOut;
@@ -198,6 +199,7 @@ final class HorizonKernel {
     private void RegisterServices() {
         Services.Register!SetSysService("set:sys");
         Services.Register!SetService("set");
+        Services.Register("aoc:u", () => cast(IPCService) new AddOnContentManagerService(ProgramId));
         Services.Register("appletOE", () => cast(IPCService) new AppletOEService(Applet));
         foreach (name; ["apm", "apm:am", "apm:p"])
             Services.Register(name, ApmFactory(name));
