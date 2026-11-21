@@ -13,9 +13,12 @@ module Source.Loader.NSPLoader;
 // Std
 import std.algorithm : endsWith;
 import std.format : format;
+import std.stdio : writefln;
 import std.uni : toLower;
 
 // Core
+import Source.Crypto.Keys;
+import Source.Format.NCA;
 import Source.Format.PFS0;
 import Source.Loader.ExeFSLoader;
 import Source.Loader.Executable;
@@ -60,15 +63,42 @@ final class NSPExecutable {
         if (archive.Has("main")) {
             return new ExeFSExecutable(new PFS0Source(archive), Name, Extension);
         }
-        size_t archiveCount = 0;
+        string[] ncas;
+        size_t compressed = 0;
         foreach (ref file; archive.Files) {
-            if (file.Name.toLower.endsWith(".nca") || file.Name.toLower.endsWith(".ncz")) {
-                archiveCount++;
+            if (file.Name.toLower.endsWith(".nca")) {
+                ncas ~= file.Name;
+            } else if (file.Name.toLower.endsWith(".ncz")) {
+                compressed++;
             }
         }
-        if (archiveCount != 0) {
-            throw new ExecutableError(format("NSP has encrypted (%d) NCA files. Sucks to suck!", archiveCount));
+        if (ncas.length != 0 || compressed != 0) {
+            DescribeNcas(archive, ncas, compressed);
+            throw new ExecutableError(format("NSP has NCA files!"));
         }
         throw new ExecutableError(format("NSP (%s) has no ExeFS content (of %d files)!", path, archive.Files.length));
+    }
+
+    private static void DescribeNcas(PFS0Archive archive, string[] ncas, size_t compressed) {
+        KeySet keys = new KeySet();
+        foreach (name; ncas) {
+            NCAInfo info;
+            try {
+                info = NCAInfo.Parse(archive.ReadRange(name, 0, NCAHeaderSize), keys);
+            } catch (NCAError error) {
+                writefln("NCA %s: %s", name, error.msg);
+                continue;
+            }
+            writefln("NCA %s: %s %s, (program %016X, keygen %d) %s", name, info.Magic == NCA3Magic ? "NCA3" : "NCA2", info.ContentType, info.ProgramId, info.KeyGeneration, info.KeysReady ? "keys ok via " ~ info.KeySource : "keys missing (" ~ info.KeyError ~ ")");
+            foreach (i, ref section; info.Sections) {
+                if (!section.Present) {
+                    continue;
+                }
+                writefln("%-4s [%d]: %s, %s hash, %s (at 0x%X size 0x%X, data 0x%X size 0x%X)", "", i, section.FsType, section.HashType, section.Encryption, section.Offset, section.Size, section.DataOffset, section.DataSize);
+            }
+        }
+        if (compressed != 0) {
+            writefln("%d compressed NCZ file arent supported.", compressed);
+        }
     }
 }

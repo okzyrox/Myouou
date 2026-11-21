@@ -14,6 +14,9 @@ module Source.Format.NRO;
 import std.file : read;
 import std.format : format;
 
+// Core
+import Source.Format.Utils.General;
+
 // Signatures
 enum uint NROMagic = 0x304F524E;
 enum uint ModuleHeaderMagic = 0x30444F4D;
@@ -87,11 +90,6 @@ class NROFileError : Exception {
     this(string message, string file = __FILE__, size_t line = __LINE__) pure nothrow @safe {
         super(message, file, line);
     }
-}
-
-// Utils
-size_t AlignValue(size_t value, size_t alignment) pure nothrow @nogc @safe {
-    return (value + alignment - 1) & ~(alignment - 1);
 }
 
 // Class
