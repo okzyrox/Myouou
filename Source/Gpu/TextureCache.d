@@ -49,6 +49,8 @@ struct CachedTexture {
     ulong CpuAddress;
     size_t GuestSize;
     bool Dirty;
+    ubyte[] Contents;
+    uint CheckedFrame;
 }
 
 HostTextureFormat ToHostFormat(const ref TextureHeader header) {
@@ -62,6 +64,11 @@ HostTextureFormat ToHostFormat(const ref TextureHeader header) {
             }
             if (component == TextureComponent.Snorm) {
                 return HostTextureFormat(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_SNORM, 1, 1, 4);
+            }
+            break;
+        case TextureFormat.B5G6R5:
+            if (unorm) {
+                return HostTextureFormat(SDL_GPU_TEXTUREFORMAT_B5G6R5_UNORM, 1, 1, 2);
             }
             break;
         case TextureFormat.G8R8:
@@ -143,6 +150,7 @@ final class TextureCache {
     private SDL_GPUSampler*[string] samplers;
     private bool[string] failures;
     private bool[ulong] trackedPages;
+    private uint frame;
     void delegate() BeforeUpload;
     private Logger log;
 
@@ -170,6 +178,8 @@ final class TextureCache {
         if (CachedTexture* found = key in textures) {
             if (found.Dirty) {
                 Reupload(*found);
+            } else if (!found.Header.BlockLinear && found.CheckedFrame != frame) {
+                Refresh(*found);
             }
             return found;
         }
@@ -212,6 +222,10 @@ final class TextureCache {
 
         log.Info("Uploaded texture %dx%d %s at gpu 0x%X (%d bytes)%s.", width, height, hostFormat.Format, header.Address, pixels.length, CornerTexels(pixels, rowBytes, blocksHigh, hostFormat));
         CachedTexture cached = CachedTexture(texture, width, height, hostFormat, header);
+        if (!header.BlockLinear) {
+            cached.Contents = pixels;
+            cached.CheckedFrame = frame;
+        }
         Track(cached, rowBytes, blocksHigh);
         textures[key] = cached;
         return key in textures;
@@ -263,14 +277,38 @@ final class TextureCache {
         }
     }
 
+    void NewFrame() {
+        frame++;
+    }
+
+    private void Refresh(ref CachedTexture cached) {
+        cached.CheckedFrame = frame;
+        size_t rowBytes;
+        size_t rows;
+        Layout(cached.Header, cached.Format, rowBytes, rows);
+        ubyte[] pixels = new ubyte[rowBytes * rows];
+        if (!ReadPixels(cached.Header, rowBytes, rows, pixels) || pixels == cached.Contents) {
+            return;
+        }
+        Upload(cached, pixels);
+    }
+
     private void Reupload(ref CachedTexture cached) {
         cached.Dirty = false;
+        cached.CheckedFrame = frame;
         size_t rowBytes;
         size_t rows;
         Layout(cached.Header, cached.Format, rowBytes, rows);
         ubyte[] pixels = new ubyte[rowBytes * rows];
         if (!ReadPixels(cached.Header, rowBytes, rows, pixels)) {
             return;
+        }
+        Upload(cached, pixels);
+    }
+
+    private void Upload(ref CachedTexture cached, ubyte[] pixels) {
+        if (!cached.Header.BlockLinear) {
+            cached.Contents = pixels;
         }
         if (BeforeUpload !is null) {
             BeforeUpload();
@@ -290,6 +328,7 @@ final class TextureCache {
             ubyte[] guest = new ubyte[size];
             memory.Read(header.Address, guest);
             BlockLinearDeswizzle(guest, pixels, rowBytes, rows, pitch, header.BlockHeightLog2);
+            MatchHostChannelOrder(header, pixels);
             return true;
         }
 
@@ -305,7 +344,17 @@ final class TextureCache {
         foreach (y; 0 .. rows) {
             memory.Read(header.Address + y * pitch, pixels[y * rowBytes .. (y + 1) * rowBytes]);
         }
+        MatchHostChannelOrder(header, pixels);
         return true;
+    }
+
+    private static void MatchHostChannelOrder(const ref TextureHeader header, ubyte[] pixels) {
+        if (header.Format != TextureFormat.B5G6R5) {
+            return;
+        }
+        foreach (ref texel; cast(ushort[]) pixels[0 .. pixels.length & ~cast(size_t) 1]) {
+            texel = cast(ushort) ((texel >> 11) | (texel & 0x07E0) | ((texel & 0x1F) << 11));
+        }
     }
 
     private static string CornerTexels(const(ubyte)[] pixels, size_t rowBytes, size_t rows, const ref HostTextureFormat hostFormat) {
