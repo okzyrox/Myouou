@@ -73,6 +73,12 @@ struct ParcelReader {
 
 struct ParcelWriter {
     ubyte[] Payload;
+    uint[] Objects;
+
+    void WriteObject(const(ubyte)[] data) {
+        Objects ~= cast(uint) Payload.length;
+        WriteData(data);
+    }
 
     void WriteData(const(ubyte)[] data) {
         Payload ~= data;
@@ -95,12 +101,14 @@ struct ParcelWriter {
     }
 
     ubyte[] Serialize() const {
-        ubyte[] raw = new ubyte[ParcelHeaderSize + Payload.length];
+        const size_t objectsSize = Objects.length * uint.sizeof;
+        ubyte[] raw = new ubyte[ParcelHeaderSize + Payload.length + objectsSize];
         *cast(uint*) raw.ptr = cast(uint) Payload.length;
         *cast(uint*) (raw.ptr + 4) = cast(uint) ParcelHeaderSize;
-        *cast(uint*) (raw.ptr + 8) = 0;
+        *cast(uint*) (raw.ptr + 8) = cast(uint) objectsSize;
         *cast(uint*) (raw.ptr + 12) = cast(uint) (ParcelHeaderSize + Payload.length);
-        raw[ParcelHeaderSize .. $] = Payload[];
+        raw[ParcelHeaderSize .. ParcelHeaderSize + Payload.length] = Payload[];
+        raw[ParcelHeaderSize + Payload.length .. $] = cast(const(ubyte)[]) Objects;
         return raw;
     }
 }
