@@ -14,12 +14,11 @@ module Source.Format.NRO;
 import std.file : read;
 import std.format : format;
 
-
-enum size_t NroPageSize = 0x1000;
 // Signatures
 enum uint NROMagic = 0x304F524E;
 enum uint ModuleHeaderMagic = 0x30444F4D;
 enum uint AssetMagic = 0x54455341;
+enum size_t NroPageSize = 0x1000;
 
 // Types
 enum NROSegmentKind : size_t {

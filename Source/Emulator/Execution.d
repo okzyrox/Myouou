@@ -30,11 +30,13 @@ import Source.Wrapper.DynarmicJit;
 // Loaders
 import Source.Loader.Executable;
 import Source.Loader.NROLoader;
+import Source.Loader.NSOLoader;
 
 // Types
 enum size_t HeaderProbeSize = 0x1000; // should be enough for most formats?
 immutable ExecutableFormat[] ExecutableFormats = [
     ExecutableFormat(NROExecutable.Name, &NROExecutable.Matches, &NROExecutable.Open),
+    ExecutableFormat(NSOExecutable.Name, &NSOExecutable.Matches, &NSOExecutable.Open),
 ];
 
 // Utils
