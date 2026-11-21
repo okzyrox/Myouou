@@ -56,6 +56,8 @@ final class AppletState {
     uint[] Messages;
     AppletFocusState FocusState = AppletFocusState.InFocus;
     ubyte OperationMode = 0;
+    bool ExitRequested;
+    bool ExitLocked;
     uint PerformanceMode = 0;
     ulong AppletResourceUserId = 0x51;
     SwitchStorage Storage;
@@ -109,7 +111,7 @@ final class ApplicationProxy : IPCService {
     this(AppletState state) {
         this.state = state;
         Command(0, "GetCommonStateGetter", (IpcContext c) => c.PushInterface(new CommonStateGetter(state)));
-        Command(1, "GetSelfController", (IpcContext c) => c.PushInterface(new SelfController()));
+        Command(1, "GetSelfController", (IpcContext c) => c.PushInterface(new SelfController(state)));
         Command(2, "GetWindowController", (IpcContext c) => c.PushInterface(new WindowController(state)));
         Command(3, "GetAudioController", (IpcContext c) => c.PushInterface(new StubbedService("am::IAudioController")));
         Command(4, "GetDisplayController", (IpcContext c) => c.PushInterface(new StubbedService("am::IDisplayController")));
@@ -170,10 +172,13 @@ final class CommonStateGetter : IPCService {
 
 // ISelfController
 final class SelfController : IPCService {
-    this() {
-        Stub(0, "Exit");
-        Stub(1, "LockExit");
-        Stub(2, "UnlockExit");
+    private AppletState state;
+
+    this(AppletState state) {
+        this.state = state;
+        Command(0, "Exit", (IpcContext c) { this.state.ExitRequested = true; });
+        Command(1, "LockExit", (IpcContext c) { this.state.ExitLocked = true; });
+        Command(2, "UnlockExit", (IpcContext c) { this.state.ExitLocked = false; });
         Command(9, "GetLibraryAppletLaunchableEvent", (IpcContext c) => c.PushCopyHandle(new KEvent("LibraryAppletLaunchable", true)));
         Stub(10, "SetScreenShotPermission");
         Stub(11, "SetOperationModeChangedNotification");

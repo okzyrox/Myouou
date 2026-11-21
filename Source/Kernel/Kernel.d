@@ -301,6 +301,10 @@ final class HorizonKernel {
 
         if (!keepRunning)
             return false;
+        if (Applet.ExitRequested) {
+            KernelLog.Info("Guest exited through `am`.");
+            return false;
+        }
 
         Jit.Register(0, result);
         SvcLog.Trace("0x%02X %-32s in: X0=0x%X X1=0x%X X2=0x%X -> %s", id, GetSvcName(id), arguments[0], arguments[1], arguments[2], FormatResult(result));

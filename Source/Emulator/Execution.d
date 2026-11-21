@@ -115,8 +115,12 @@ int RunFile(string path) {
         svcCount++;
         bool wasStubbed = kernel.HandleSvc(environment.PreviousSvc);
         if (!wasStubbed) {
-            writefln("Stopped at %s (0x%X).", GetSvcName(environment.PreviousSvc), jit.Pc - 4);
-            DebugRegs(jit);
+            if (kernel.Applet.ExitRequested) {
+                writefln("Guest exited through `am`.");
+            } else {
+                writefln("Stopped at %s (0x%X).", GetSvcName(environment.PreviousSvc), jit.Pc - 4);
+                DebugRegs(jit);
+            }
             kernel.Shutdown();
             return 0;
         }
