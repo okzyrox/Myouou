@@ -23,6 +23,10 @@ import Source.Emulator.Execution;
 int main(string[] args) {
     LogLevel logLevel = LogLevel.Info;
     LogFilter.MinimumLevel(logLevel);
+    LogFile.Default(MainLogFile);
+    scope (exit) {
+        LogFile.CloseAll();
+    }
 
     if (args.length > 1) {
         return RunFile(args[1]);
