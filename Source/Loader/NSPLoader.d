@@ -67,8 +67,8 @@ final class NSPExecutable {
             }
         }
         if (archiveCount != 0) {
-            throw new ExecutableError(format("NSP has encrypted (%d) NCA files. Sucks to suck!", archiveCount, path));
+            throw new ExecutableError(format("NSP has encrypted (%d) NCA files. Sucks to suck!", archiveCount));
         }
-        throw new ExecutableError(format("NSP (%s) has no ExeFS content (of %d files)!", archive.Files.length, path));
+        throw new ExecutableError(format("NSP (%s) has no ExeFS content (of %d files)!", path, archive.Files.length));
     }
 }
