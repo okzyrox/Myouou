@@ -174,8 +174,10 @@ final class AudioOutService : IPCService {
 
     private void GetReleasedAudioOutBuffers(IpcContext context) {
         Poll();
-        const size_t count = min(released.length, context.OutputSize(0) / ulong.sizeof);
-        context.WriteOutput(0, cast(const(ubyte)[]) released[0 .. count]);
+        ulong[] tags = new ulong[context.OutputSize(0) / ulong.sizeof];
+        const size_t count = min(released.length, tags.length);
+        tags[0 .. count] = released[0 .. count];
+        context.WriteOutput(0, cast(const(ubyte)[]) tags);
         released = released[count .. $].dup;
         if (released.length == 0) {
             bufferEvent.Clear();
