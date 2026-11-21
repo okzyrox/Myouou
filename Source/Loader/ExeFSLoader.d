@@ -11,7 +11,7 @@
 module Source.Loader.ExeFSLoader;
 
 // Std
-import std.file : exists, isDir, isFile;
+import std.file : exists, isDir, isFile, read;
 import std.format : format;
 import std.path : baseName, buildPath, dirName;
 import std.stdio;
@@ -28,11 +28,12 @@ import Source.Memory.Guest;
 // Types
 immutable string[] ExeFSModuleNames = [
     // In most titles.
-    "main", 
     "rtld", 
-    "sdk",
+    "main", 
     // Usually in game titles only.
     "subsdk0", "subsdk1", "subsdk2", "subsdk3", "subsdk4", "subsdk5", "subsdk6", "subsdk7", "subsdk8", "subsdk9"
+    // In most titles as well.
+    "sdk",
 ];
 enum string NPDMFileName = "main.npdm";
 enum ulong ExeFSCodeBase = 0x0800_0000;
@@ -44,34 +45,67 @@ struct ExeFSModule {
     NSOFile Image;
 }
 
+interface ExeFSSource {
+    string Label() const;
+    bool Has(string name);
+    const(ubyte)[] Read(string name);
+}
+
+final class FolderSource : ExeFSSource {
+    private string folder;
+
+    this(string folder) {
+        this.folder = folder;
+    }
+
+    string Label() const {
+        return folder;
+    }
+
+    bool Has(string name) {
+        const string path = buildPath(folder, name);
+        return exists(path) && isFile(path);
+    }
+
+    const(ubyte)[] Read(string name) {
+        return cast(const(ubyte)[]) read(buildPath(folder, name));
+    }
+}
+
 // Class
 final class ExeFSExecutable : Executable {
     enum string Name = "ExeFS";
     enum string Extension = ".npdm";
 
-    private string folder;
+    private ExeFSSource source;
+    private string formatName;
+    private string formatExtension;
     private NPDMFile npdm;
     private ExeFSModule[] modules;
 
     this(string folder) {
-        this.folder = folder;
-        const string npdmPath = buildPath(folder, NPDMFileName);
-        if (exists(npdmPath)) {
-            npdm = NPDMFile.Load(npdmPath);
+        this(new FolderSource(folder), Name, Extension);
+    }
+
+    this(ExeFSSource source, string formatName, string formatExtension) {
+        this.source = source;
+        this.formatName = formatName;
+        this.formatExtension = formatExtension;
+        if (source.Has(NPDMFileName)) {
+            npdm = new NPDMFile(source.Read(NPDMFileName));
         }
         bool hasMain = false;
         foreach (name; ExeFSModuleNames) {
-            const string modulePath = buildPath(folder, name);
-            if (!exists(modulePath) || !isFile(modulePath)) {
+            if (!source.Has(name)) {
                 continue;
             }
-            ExeFSModule loadedModule = ExeFSModule(name, NSOFile.Load(modulePath));
+            ExeFSModule loadedModule = ExeFSModule(name, new NSOFile(source.Read(name)));
             writefln("Loaded ExeFS module: %s.", loadedModule.Name);
             modules ~= loadedModule;
             hasMain |= name == "main";
         }
         if (!hasMain) {
-            throw new ExecutableError("ExeFS has no main module: " ~ folder);
+            throw new ExecutableError("ExeFS has no main module: " ~ source.Label);
         }
     }
 
@@ -88,11 +122,11 @@ final class ExeFSExecutable : Executable {
     }
 
     string FormatName() const {
-        return Name;
+        return formatName;
     }
 
     string FormatExtension() const {
-        return Extension;
+        return formatExtension;
     }
 
     string TitleKey() const {
@@ -100,7 +134,7 @@ final class ExeFSExecutable : Executable {
             return format("%016X", npdm.ProgramId);
         }
         string key;
-        foreach (c; baseName(folder)) {
+        foreach (c; baseName(source.Label)) {
             key ~= (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ? c : '_';
         }
         return key.length != 0 ? key : "exefs";
