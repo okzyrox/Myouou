@@ -143,6 +143,7 @@ final class TextureCache {
     private SDL_GPUSampler*[string] samplers;
     private bool[string] failures;
     private bool[ulong] trackedPages;
+    void delegate() BeforeUpload;
     private Logger log;
 
     this(HostDisplay display, GpuMemoryManager memory) {
@@ -203,6 +204,9 @@ final class TextureCache {
         if (texture is null) {
             log.Error("Texture creation failed: %s", fromStringz(SDL_GetError()));
             return null;
+        }
+        if (BeforeUpload !is null) {
+            BeforeUpload();
         }
         display.UploadTexture(texture, pixels, width, height, width);
 
@@ -267,6 +271,9 @@ final class TextureCache {
         ubyte[] pixels = new ubyte[rowBytes * rows];
         if (!ReadPixels(cached.Header, rowBytes, rows, pixels)) {
             return;
+        }
+        if (BeforeUpload !is null) {
+            BeforeUpload();
         }
         display.UploadTexture(cached.Texture, pixels, cached.Width, cached.Height, cached.Width);
         log.Trace("Reuploaded texture %dx%d at gpu addr 0x%X.", cached.Width, cached.Height, cached.Header.Address);

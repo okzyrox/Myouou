@@ -33,6 +33,8 @@ enum uint MaxVertexAttributes = 32;
 enum uint MaxVertexArrays = 32;
 enum size_t MaxGuestBufferSize = 64 * 1024 * 1024;
 enum size_t ZeroStrideVertexBytes = 0x100;
+enum size_t MaxBatchedDraws = 1024;
+enum size_t MaxBatchedBytes = 32 * 1024 * 1024;
 enum size_t MaxShaderBytes = 0x10000;
 
 enum GuestTopology : uint {
@@ -97,9 +99,56 @@ struct VertexLayout {
     uint[MaxVertexArrays] GuestArrays;
 }
 
-struct DrawUploads {
+struct StagedUpload {
+    SDL_GPUBuffer* Buffer;
+    size_t Offset;
+    size_t Size;
+}
+
+struct PendingDraw {
+    SDL_GPUGraphicsPipeline* Pipeline;
+    SDL_GPUViewport Viewport;
+    SDL_FColor BlendColor;
+    ubyte StencilReference;
+    float[4] ViewParams;
+    SDL_GPUBufferBinding[MaxVertexArrays] VertexBindings;
+    uint VertexBufferCount;
+    SDL_GPUBuffer*[] VertexStorage;
+    SDL_GPUBuffer*[] FragmentStorage;
+    SDL_GPUTextureSamplerBinding[] VertexTextures;
+    SDL_GPUTextureSamplerBinding[] FragmentTextures;
+    SDL_GPUBuffer* IndexBuffer;
+    uint DrawCount;
+}
+
+struct DrawBatch {
+    SDL_GPUTexture*[RenderTargetCount] ColorTextures;
+    size_t ColorCount;
+    SDL_GPUTexture* DepthTexture;
+    PendingDraw[] Draws;
+    ubyte[] Staging;
+    StagedUpload[] Uploads;
     SDL_GPUBuffer*[] Buffers;
-    SDL_GPUTransferBuffer*[] Transfers;
+
+    bool SameTargets(const(RenderTargetTexture*)[] colors, const(SDL_GPUTexture)* depth) const {
+        if (colors.length != ColorCount || depth != DepthTexture) {
+            return false;
+        }
+        foreach (i, target; colors) {
+            if (target.Texture != ColorTextures[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void SetTargets(const(RenderTargetTexture*)[] colors, SDL_GPUTexture* depth) {
+        ColorCount = colors.length;
+        foreach (i, target; colors) {
+            ColorTextures[i] = cast(SDL_GPUTexture*) target.Texture;
+        }
+        DepthTexture = depth;
+    }
 }
 
 // Class
@@ -115,6 +164,7 @@ final class HostRenderer : GpuRenderer {
     private bool[string] failures;
     private bool[string] describedTextures; // temp
     private TextureCache textureCache;
+    private DrawBatch batch;
     private Logger log;
 
     this(HostDisplay display, GpuMemoryManager memory) {
@@ -123,6 +173,7 @@ final class HostRenderer : GpuRenderer {
         log = GetLogger("Gpu::Renderer");
         display.FindHostSurface = &FindSurface;
         textureCache = new TextureCache(display, memory);
+        textureCache.BeforeUpload = &Flush;
     }
 
     private SDL_GPUDevice* Device() {
@@ -167,8 +218,10 @@ final class HostRenderer : GpuRenderer {
         RenderTargetTexture* existing = address in targets;
         if (existing !is null && existing.Width == target.Width && existing.Height == target.Height && existing.Format == hostFormat)
             return existing;
-        if (existing !is null)
+        if (existing !is null) {
+            Flush();
             SDL_ReleaseGPUTexture(Device, existing.Texture);
+        }
 
         SDL_GPUTextureCreateInfo info;
         info.type = SDL_GPU_TEXTURETYPE_2D;
@@ -187,6 +240,7 @@ final class HostRenderer : GpuRenderer {
     }
 
     private bool FindSurface(ulong address, out HostSurface surface) {
+        Flush();
         RenderTargetTexture* target = address in targets;
         if (target is null)
             return false;
@@ -256,6 +310,7 @@ final class HostRenderer : GpuRenderer {
             return existing;
         }
         if (existing !is null) {
+            Flush();
             SDL_ReleaseGPUTexture(Device, existing.Texture);
         }
 
@@ -277,6 +332,7 @@ final class HostRenderer : GpuRenderer {
 
     // Clears
     bool Clear(Maxwell3D engine, uint argument) {
+        Flush();
         const bool depth = (argument & 1) != 0;
         const bool stencil = (argument & 2) != 0;
         if ((depth || stencil) && Ready()) {
@@ -519,41 +575,120 @@ final class HostRenderer : GpuRenderer {
 
     // Buffers
     // TODO: use a cache buffer for some of this data (sometimes)
-    private SDL_GPUBuffer* UploadBuffer(SDL_GPUCopyPass* copy, const(ubyte)[] data, SDL_GPUBufferUsageFlags_ usage, ref DrawUploads uploads) {
+    private SDL_GPUBuffer* UploadBuffer(const(ubyte)[] data, SDL_GPUBufferUsageFlags_ usage) {
         SDL_GPUBufferCreateInfo info;
         info.usage = usage;
         info.size = cast(uint) ((data.length + 3) & ~3);
         SDL_GPUBuffer* buffer = SDL_CreateGPUBuffer(Device, &info);
         if (buffer is null)
             return null;
-        uploads.Buffers ~= buffer;
-
-        SDL_GPUTransferBufferCreateInfo transferInfo;
-        transferInfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        transferInfo.size = info.size;
-        SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(Device, &transferInfo);
-        if (transfer is null)
-            return null;
-        uploads.Transfers ~= transfer;
-        ubyte* mapped = cast(ubyte*) SDL_MapGPUTransferBuffer(Device, transfer, false);
-        mapped[0 .. data.length] = data[];
-        mapped[data.length .. info.size] = 0;
-        SDL_UnmapGPUTransferBuffer(Device, transfer);
-
-        SDL_GPUTransferBufferLocation source;
-        source.transferBuffer = transfer;
-        SDL_GPUBufferRegion destination;
-        destination.buffer = buffer;
-        destination.size = info.size;
-        SDL_UploadToGPUBuffer(copy, &source, &destination, false);
+        batch.Buffers ~= buffer;
+        const size_t offset = batch.Staging.length;
+        batch.Staging.length = offset + info.size;
+        batch.Staging[offset .. offset + data.length] = data[];
+        batch.Uploads ~= StagedUpload(buffer, offset, info.size);
         return buffer;
     }
 
-    private void Release(ref DrawUploads uploads) {
-        foreach (buffer; uploads.Buffers)
-            SDL_ReleaseGPUBuffer(Device, buffer);
-        foreach (transfer; uploads.Transfers)
+    // Batches
+    private void Flush() {
+        if (batch.Draws.length == 0 && batch.Uploads.length == 0) {
+            batch = DrawBatch.init;
+            return;
+        }
+        SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(Device);
+        SDL_GPUTransferBuffer* transfer;
+        if (batch.Staging.length != 0) {
+            SDL_GPUTransferBufferCreateInfo transferInfo;
+            transferInfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+            transferInfo.size = cast(uint) batch.Staging.length;
+            transfer = SDL_CreateGPUTransferBuffer(Device, &transferInfo);
+            if (transfer is null) {
+                log.Error("Batch transfer buffer creation failed (%s)!", fromStringz(SDL_GetError()));
+                SDL_CancelGPUCommandBuffer(commands);
+                ReleaseBatch();
+                return;
+            }
+            ubyte* mapped = cast(ubyte*) SDL_MapGPUTransferBuffer(Device, transfer, false);
+            mapped[0 .. batch.Staging.length] = batch.Staging[];
+            SDL_UnmapGPUTransferBuffer(Device, transfer);
+
+            SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commands);
+            foreach (upload; batch.Uploads) {
+                SDL_GPUTransferBufferLocation source;
+                source.transferBuffer = transfer;
+                source.offset = cast(uint) upload.Offset;
+                SDL_GPUBufferRegion destination;
+                destination.buffer = upload.Buffer;
+                destination.size = cast(uint) upload.Size;
+                SDL_UploadToGPUBuffer(copy, &source, &destination, false);
+            }
+            SDL_EndGPUCopyPass(copy);
+        }
+
+        if (batch.Draws.length != 0) {
+            SDL_GPUColorTargetInfo[RenderTargetCount] colorInfos;
+            foreach (i; 0 .. batch.ColorCount) {
+                colorInfos[i].texture = batch.ColorTextures[i];
+                colorInfos[i].loadOp = SDL_GPU_LOADOP_LOAD;
+                colorInfos[i].storeOp = SDL_GPU_STOREOP_STORE;
+            }
+            SDL_GPUDepthStencilTargetInfo depthInfo;
+            const bool hasDepth = batch.DepthTexture !is null;
+            if (hasDepth) {
+                depthInfo.texture = batch.DepthTexture;
+                depthInfo.loadOp = SDL_GPU_LOADOP_LOAD;
+                depthInfo.storeOp = SDL_GPU_STOREOP_STORE;
+                depthInfo.stencilLoadOp = SDL_GPU_LOADOP_LOAD;
+                depthInfo.stencilStoreOp = SDL_GPU_STOREOP_STORE;
+            }
+            SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(commands, colorInfos.ptr, cast(uint) batch.ColorCount, hasDepth ? &depthInfo : null);
+            foreach (ref draw; batch.Draws) {
+                if (hasDepth) {
+                    SDL_SetGPUStencilReference(pass, draw.StencilReference);
+                }
+                SDL_BindGPUGraphicsPipeline(pass, draw.Pipeline);
+                SDL_SetGPUViewport(pass, &draw.Viewport);
+                SDL_SetGPUBlendConstants(pass, draw.BlendColor);
+                if (draw.VertexBufferCount > 0) {
+                    SDL_BindGPUVertexBuffers(pass, 0, draw.VertexBindings.ptr, draw.VertexBufferCount);
+                }
+                if (draw.VertexStorage.length > 0) {
+                    SDL_BindGPUVertexStorageBuffers(pass, 0, draw.VertexStorage.ptr, cast(uint) draw.VertexStorage.length);
+                }
+                if (draw.FragmentStorage.length > 0) {
+                    SDL_BindGPUFragmentStorageBuffers(pass, 0, draw.FragmentStorage.ptr, cast(uint) draw.FragmentStorage.length);
+                }
+                if (draw.VertexTextures.length > 0) {
+                    SDL_BindGPUVertexSamplers(pass, 0, draw.VertexTextures.ptr, cast(uint) draw.VertexTextures.length);
+                }
+                if (draw.FragmentTextures.length > 0) {
+                    SDL_BindGPUFragmentSamplers(pass, 0, draw.FragmentTextures.ptr, cast(uint) draw.FragmentTextures.length);
+                }
+                SDL_PushGPUVertexUniformData(commands, 0, draw.ViewParams.ptr, draw.ViewParams.sizeof);
+                if (draw.IndexBuffer !is null) {
+                    SDL_GPUBufferBinding indexBinding;
+                    indexBinding.buffer = draw.IndexBuffer;
+                    SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                    SDL_DrawGPUIndexedPrimitives(pass, draw.DrawCount, 1, 0, 0, 0);
+                } else {
+                    SDL_DrawGPUPrimitives(pass, draw.DrawCount, 1, 0, 0);
+                }
+            }
+            SDL_EndGPURenderPass(pass);
+        }
+        SDL_SubmitGPUCommandBuffer(commands);
+        if (transfer !is null) {
             SDL_ReleaseGPUTransferBuffer(Device, transfer);
+        }
+        ReleaseBatch();
+    }
+
+    private void ReleaseBatch() {
+        foreach (buffer; batch.Buffers) {
+            SDL_ReleaseGPUBuffer(Device, buffer);
+        }
+        batch = DrawBatch.init;
     }
 
     private ubyte[] ReadGuest(ulong address, size_t size) {
@@ -602,13 +737,13 @@ final class HostRenderer : GpuRenderer {
         return list;
     }
 
-    private bool UploadConstBuffers(Maxwell3D engine, ShaderStage stage, const(uint)[] indices, SDL_GPUCopyPass* copy, ref DrawUploads uploads, out SDL_GPUBuffer*[] result) {
+    private bool UploadConstBuffers(Maxwell3D engine, ShaderStage stage, const(uint)[] indices, out SDL_GPUBuffer*[] result) {
         foreach (index; indices) {
             const ConstBufferBinding binding = engine.ConstBuffer(ConstBufferStage(stage), index);
             ubyte[] data = binding.Enabled ? ReadGuest(binding.Address, binding.Size) : null;
             if (data is null)
                 data = new ubyte[16];
-            SDL_GPUBuffer* buffer = UploadBuffer(copy, data, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ, uploads);
+            SDL_GPUBuffer* buffer = UploadBuffer(data, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ);
             if (buffer is null)
                 return false;
             result ~= buffer;
@@ -934,17 +1069,12 @@ final class HostRenderer : GpuRenderer {
         if (pipeline is null)
             return false;
 
-        DrawUploads uploads;
-        scope (exit)
-            Release(uploads);
-            // todo: use shared command buffers/renderpass for batched draw
-            // cause this is expensive..
-        SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(Device);
-        SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commands);
-        
+        SDL_GPUTexture* depthTexture = depthTarget !is null ? depthTarget.Texture : null;
+        if (!batch.SameTargets(colorTargets, depthTexture)) {
+            Flush();
+            batch.SetTargets(colorTargets, depthTexture);
+        }
         bool EndDraw() {
-            SDL_EndGPUCopyPass(copy);
-            SDL_CancelGPUCommandBuffer(commands);
             return false;
         }
 
@@ -1004,71 +1134,43 @@ final class HostRenderer : GpuRenderer {
                 FailOnce(format("va%d", guestArray), "Vertex array %d has bad range 0x%X..0x%X", guestArray, start, end);
                 return EndDraw();
             }
-            vertexBindings[slot].buffer = UploadBuffer(copy, data, SDL_GPU_BUFFERUSAGE_VERTEX, uploads);
+            vertexBindings[slot].buffer = UploadBuffer(data, SDL_GPU_BUFFERUSAGE_VERTEX);
             if (vertexBindings[slot].buffer is null)
                 return EndDraw();
         }
 
         SDL_GPUBuffer*[] vertexStorage;
         SDL_GPUBuffer*[] fragmentStorage;
-        if (!UploadConstBuffers(engine, ShaderStage.VertexB, vertex.Translation.ConstBuffers, copy, uploads, vertexStorage)
-            || !UploadConstBuffers(engine, ShaderStage.Fragment, fragment.Translation.ConstBuffers, copy, uploads, fragmentStorage))
+        if (!UploadConstBuffers(engine, ShaderStage.VertexB, vertex.Translation.ConstBuffers, vertexStorage)
+            || !UploadConstBuffers(engine, ShaderStage.Fragment, fragment.Translation.ConstBuffers, fragmentStorage))
             return EndDraw();
 
         SDL_GPUBuffer* indexBuffer;
         uint drawCount = count;
         if (indices.length != 0) {
-            indexBuffer = UploadBuffer(copy, cast(const(ubyte)[]) indices, SDL_GPU_BUFFERUSAGE_INDEX, uploads);
+            indexBuffer = UploadBuffer(cast(const(ubyte)[]) indices, SDL_GPU_BUFFERUSAGE_INDEX);
             if (indexBuffer is null)
                 return EndDraw();
             drawCount = cast(uint) indices.length;
         }
-        SDL_EndGPUCopyPass(copy);
-
-        SDL_GPUColorTargetInfo[RenderTargetCount] colorInfos;
-        foreach (i, target; colorTargets) {
-            colorInfos[i].texture = target.Texture;
-            colorInfos[i].loadOp = SDL_GPU_LOADOP_LOAD;
-            colorInfos[i].storeOp = SDL_GPU_STOREOP_STORE;
+        PendingDraw pending;
+        pending.Pipeline = pipeline;
+        pending.Viewport = viewport;
+        pending.BlendColor = SDL_FColor(engine.BlendColor(0), engine.BlendColor(1), engine.BlendColor(2), engine.BlendColor(3));
+        pending.StencilReference = cast(ubyte) engine.Stencil(false).Reference;
+        pending.ViewParams = viewParams;
+        pending.VertexBindings = vertexBindings;
+        pending.VertexBufferCount = layout.BufferCount;
+        pending.VertexStorage = vertexStorage;
+        pending.FragmentStorage = fragmentStorage;
+        pending.VertexTextures = vertexTextures;
+        pending.FragmentTextures = fragmentTextures;
+        pending.IndexBuffer = indexBuffer;
+        pending.DrawCount = drawCount;
+        batch.Draws ~= pending;
+        if (batch.Draws.length >= MaxBatchedDraws || batch.Staging.length >= MaxBatchedBytes) {
+            Flush();
         }
-        SDL_GPUDepthStencilTargetInfo depthInfo;
-        if (depthTarget !is null) {
-            depthInfo.texture = depthTarget.Texture;
-            depthInfo.loadOp = SDL_GPU_LOADOP_LOAD;
-            depthInfo.storeOp = SDL_GPU_STOREOP_STORE;
-            depthInfo.stencilLoadOp = SDL_GPU_LOADOP_LOAD;
-            depthInfo.stencilStoreOp = SDL_GPU_STOREOP_STORE;
-        }
-        SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(commands, colorInfos.ptr, cast(uint) colorTargets.length, depthTarget !is null ? &depthInfo : null);
-        if (depthTarget !is null) {
-            SDL_SetGPUStencilReference(pass, cast(ubyte) engine.Stencil(false).Reference);
-        }
-        SDL_BindGPUGraphicsPipeline(pass, pipeline);
-        SDL_SetGPUViewport(pass, &viewport);
-        SDL_SetGPUBlendConstants(pass, SDL_FColor(engine.BlendColor(0), engine.BlendColor(1), engine.BlendColor(2), engine.BlendColor(3)));
-        if (layout.BufferCount > 0)
-            SDL_BindGPUVertexBuffers(pass, 0, vertexBindings.ptr, layout.BufferCount);
-        if (vertexStorage.length > 0)
-            SDL_BindGPUVertexStorageBuffers(pass, 0, vertexStorage.ptr, cast(uint) vertexStorage.length);
-        if (fragmentStorage.length > 0)
-            SDL_BindGPUFragmentStorageBuffers(pass, 0, fragmentStorage.ptr, cast(uint) fragmentStorage.length);
-        if (vertexTextures.length > 0) {
-            SDL_BindGPUVertexSamplers(pass, 0, vertexTextures.ptr, cast(uint) vertexTextures.length);
-        }
-        if (fragmentTextures.length > 0) {
-            SDL_BindGPUFragmentSamplers(pass, 0, fragmentTextures.ptr, cast(uint) fragmentTextures.length);
-        }
-        SDL_PushGPUVertexUniformData(commands, 0, viewParams.ptr, viewParams.sizeof);
-        if (indexBuffer !is null) {
-            SDL_GPUBufferBinding indexBinding;
-            indexBinding.buffer = indexBuffer;
-            SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-            SDL_DrawGPUIndexedPrimitives(pass, drawCount, 1, 0, 0, 0);
-        } else {
-            SDL_DrawGPUPrimitives(pass, drawCount, 1, 0, 0);
-        }
-        SDL_EndGPURenderPass(pass);
-        SDL_SubmitGPUCommandBuffer(commands);
         return true;
     }
 }
