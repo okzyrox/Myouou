@@ -406,7 +406,7 @@ final class HorizonKernel {
             return KernelResult.InvalidCurrentMemory;
 
         Memory.MapBacked(destination, sources[0].Bytes, sources[0].Permission, "Alias", MemoryType.Stack);
-        sources[0].Permission = MemoryPermission.None;
+        Memory.Protect(source, cast(size_t) size, MemoryPermission.None);
         Invalidate(source, size);
         return ResultSuccess;
     }

@@ -22,6 +22,8 @@ version (Windows) {
 
 enum size_t GuestPageSize = 0x1000;
 enum size_t HostPagesLimit = 0x10_0000;
+enum uint PageTableAddressBits = 37;
+enum uint GuestPageBits = 12;
 
 // Types
 enum MemoryPermission : ubyte {
@@ -153,6 +155,51 @@ final class MemoryRegion {
 final class GuestMemory {
     private MemoryRegion[] regions;
     private MemoryRegion previousRegion;
+    private void*[] pageTable;
+
+    // Page table
+    // Mainly for caching some of the host pointers into a flat table
+    // so that Dynarmic doesnt have to do a lot of calls through the emulator
+    // just to write memory
+    void** EnablePageTable() {
+        if (pageTable is null) {
+            const size_t entries = cast(size_t) 1 << (PageTableAddressBits - GuestPageBits);
+            // todo: handle page protection if any
+            pageTable = cast(void*[]) AllocateHostPages(entries * (void*).sizeof);
+            foreach (region; regions) {
+                SetPages(region);
+            }
+        }
+        return pageTable.ptr;
+    }
+
+    private void SetPages(MemoryRegion region) {
+        if (pageTable is null) {
+            return;
+        }
+        const bool readable = (region.Permission & MemoryPermission.Read) != 0;
+        const size_t first = cast(size_t) (region.Base >> GuestPageBits);
+        const size_t count = region.Bytes.length >> GuestPageBits;
+        foreach (i; 0 .. count) {
+            if (first + i >= pageTable.length) {
+                break;
+            }
+            pageTable[first + i] = readable ? cast(void*) (region.Bytes.ptr + (i << GuestPageBits)) : null;
+        }
+    }
+
+    private void ClearPages(ulong base, size_t size) {
+        if (pageTable is null) {
+            return;
+        }
+        const size_t first = cast(size_t) (base >> GuestPageBits);
+        foreach (page; first .. first + (size >> GuestPageBits)) {
+            if (page >= pageTable.length) {
+                break;
+            }
+            pageTable[page] = null;
+        }
+    }
 
     MemoryRegion Map(ulong base, size_t size, MemoryPermission permission, string name, MemoryType memType = MemoryType.Normal) {
         CheckMappable(base, size, name);
@@ -206,6 +253,7 @@ final class GuestMemory {
             if (region.Base < base || region.End() > base + size)
                 kept ~= region;
         regions = kept;
+        ClearPages(base, size);
         foreach (region; found) {
             if (region.HostPages) {
                 ReleaseHostPages(region.Bytes);
@@ -219,8 +267,10 @@ final class GuestMemory {
         MemoryRegion[] found = Isolate(base, size);
         if (found is null)
             return false;
-        foreach (region; found)
+        foreach (region; found) {
             region.Permission = permission;
+            SetPages(region);
+        }
         return true;
     }
 
@@ -276,6 +326,7 @@ final class GuestMemory {
             regI++;
         regions = regions[0 .. regI] ~ reg ~ regions[regI .. $];
         previousRegion = null;
+        SetPages(reg);
         return reg;
     }
 

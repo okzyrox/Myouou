@@ -53,6 +53,11 @@ final class GuestEnvironment : DynarmicCallbacks {
         config.TpidrroEl0 = &TpidrroEl0;
         config.TpidrEl0 = &TpidrEl0;
         config.EnableCycleCounting = false;
+        config.PageTable = Memory.EnablePageTable();
+        config.PageTableAddressSpaceBits = PageTableAddressBits;
+        config.PageTablePointerMaskBits = 0;
+        config.SilentlyMirrorPageTable = false;
+        config.AbsoluteOffsetPageTable = false;
         return config;
     }
 
